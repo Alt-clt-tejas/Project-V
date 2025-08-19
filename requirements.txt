@@ -1,5 +1,3 @@
-# requirements.txt
-
 # ==== Core Framework ====
 # Pinned to a version compatible with spacy's typer dependency
 fastapi==0.109.2
