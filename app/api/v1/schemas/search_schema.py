@@ -1,46 +1,107 @@
-# app/api/v1/schemas/search_schema.py
-from typing import List, Optional
+# app/api/v1/routes/search_routes.py
+# FINAL CORRECT VERSION
 
+import time
+from typing import List, Optional, Dict
+
+from fastapi import APIRouter, Depends, Body, HTTPException
 from pydantic import BaseModel, Field
+from starlette.status import HTTP_503_SERVICE_UNAVAILABLE
 
-from app.domains.search.schemas import Platform
+from app.agents.s5_search_agent import S5SearchAgent
+from app.api.dependencies import get_s5_agent
 
+# WE ARE IMPORTING DIRECTLY FROM THE DOMAIN LAYER.
+# THIS IS THE ONLY IMPORT NEEDED FOR OUR SCHEMAS.
+from app.domains.search.schemas import (
+    SearchQuery, 
+    SearchResponse as DomainSearchResponse,
+    Platform,
+    ContentCategory
+)
 
-class SearchRequest(BaseModel):
-    """
-    Defines the structure for an incoming search request to the API.
-    """
-    query: str = Field(..., min_length=1, max_length=100,
-                       description="The search query (name, handle, or keywords).")
-    platforms: List[Platform] = Field(
-        default=[p for p in Platform if p not in [Platform.NEWS, Platform.WEB]],
-        description="A list of platforms to search on."
-    )
+#==============================================================================
+# We define the PUBLIC models for our API response directly in this file.
+# This makes the route self-contained and breaks all circular dependencies.
+#==============================================================================
 
-
-class SearchResultItemResponse(BaseModel):
-    """
-    Defines the structure for a single search result item in the API response.
-    This is the public-facing data transfer object (DTO).
-    """
+class PublicSearchResult(BaseModel):
+    """The public-facing representation of a single search result."""
     platform: Platform
     name: str
     handle: str
-    match_confidence: float
-    # We can rename fields for the public API, e.g., 'followers_count' -> 'subscribers_count'
-    # For simplicity, we keep them the same for now, but this is where you'd do it.
-    follower_count: Optional[int] = None
     profile_url: str
+    bio: Optional[str] = None
+    follower_count: Optional[int] = None
+    is_verified: bool
+    categories: List[ContentCategory] = Field(default_factory=list)
+    match_confidence: float
+    match_reasons: Optional[List[str]] = None
 
-    class Config:
-        # Pydantic v1: orm_mode = True
-        # Pydantic v2:
-        from_attributes = True
+class PublicSearchResponse(BaseModel):
+    """The public-facing top-level API response object."""
+    query: SearchQuery
+    search_duration_ms: float
+    total_count: int
+    results: List[PublicSearchResult]
+    platform_breakdown: Dict[Platform, int] = Field(default_factory=dict)
+    category_breakdown: Dict[ContentCategory, int] = Field(default_factory=dict)
+    suggestions: List[str] = Field(default_factory=list)
 
+#==============================================================================
 
-class SearchResponse(BaseModel):
-    """
-    Defines the final structure of the API search response.
-    """
-    query: str
-    results: List[SearchResultItemResponse]
+router = APIRouter()
+
+@router.post(
+    "/",
+    response_model=PublicSearchResponse,
+    summary="Perform a Comprehensive Creator Search",
+)
+async def search_creators(
+    query: SearchQuery = Body(...),
+    agent: S5SearchAgent = Depends(get_s5_agent),
+):
+    start_time = time.time()
+    
+    try:
+        domain_response: DomainSearchResponse = await agent.search(
+            query=query.query,
+            platforms=query.filters.platforms,
+            search_type=query.search_type,
+            filters=query.filters
+        )
+        
+        public_results = []
+        for res in domain_response.results:
+            public_results.append(
+                PublicSearchResult(
+                    platform=res.profile.platform,
+                    name=res.profile.name,
+                    handle=res.profile.handle,
+                    profile_url=str(res.profile.profile_url),
+                    bio=res.profile.bio,
+                    follower_count=res.profile.followers_count,
+                    is_verified=res.profile.is_verified,
+                    categories=res.profile.metadata.categories,
+                    match_confidence=res.match_confidence,
+                    match_reasons=res.match_details.match_reasons if res.match_details else None
+                )
+            )
+
+        end_time = time.time()
+
+        return PublicSearchResponse(
+            query=query,
+            search_duration_ms=(end_time - start_time) * 1000,
+            total_count=domain_response.total_count,
+            results=public_results,
+            platform_breakdown=domain_response.platform_breakdown,
+            category_breakdown=domain_response.category_breakdown,
+            suggestions=domain_response.suggestions
+        )
+
+    except Exception as e:
+        raise HTTPException(
+            status_code=HTTP_503_SERVICE_UNAVAILABLE,
+            detail=f"An unexpected error occurred: {e}"
+        )
