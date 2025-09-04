@@ -32,7 +32,7 @@ try:
     print("[SUCCESS] Imported 'app.api.dependencies'")
 
     print("\nAttempting to import 'app.api.v1.routes.search_routes'...")
-    from app.api.v1.routes import search_routes
+    from app.api import search
     print("[SUCCESS] Imported 'app.api.v1.routes.search_routes'")
 
     print("\nAttempting to import FINAL MODULE 'app.main'...")

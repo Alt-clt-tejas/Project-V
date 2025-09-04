@@ -1,5 +1,3 @@
-# requirements.txt
-
 # ==== Core Framework ====
 # Pinned to a version compatible with spacy's typer dependency
 fastapi==0.109.2
@@ -19,7 +17,8 @@ python-dateutil==2.9.0.post0
 # ==== API Integrations ====
 google-api-python-client==2.126.0
 tweepy==4.14.0
-# instagrapi==1.18.3 # instagrapi has many dependencies, add back when needed
+instagrapi==2.1.2
+Pillow>=8.1.1
 newsapi-python==0.2.7
 beautifulsoup4==4.12.3
 lxml==5.2.1

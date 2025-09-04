@@ -1,80 +1,78 @@
 # app/api/dependencies.py
-from contextlib import asynccontextmanager
+import logging
 from functools import lru_cache
 from typing import Dict
+from contextlib import asynccontextmanager
 
 import httpx
-from fastapi import FastAPI
+from fastapi import Depends
 
-from app.agents.s5_search_agent import S5SearchAgent
-from app.config.base import settings
+from app.config.base import AppSettings
 from app.connectors.base_connector import BaseConnector
-# Import all your implemented connectors
 from app.connectors.youtube_connector import YouTubeConnector
-# from app.connectors.twitter_connector import TwitterConnector # <-- Add as you build them
+from app.connectors.instagram_connector import InstagramConnector
 from app.domains.search.schemas import Platform
 from app.domains.search.service import SearchService
+from app.agents.s5_search_agent import S5SearchAgent
 
-# This dictionary will hold our live application state
+logger = logging.getLogger(__name__)
 app_state = {}
 
 @asynccontextmanager
-async def lifespan(app: FastAPI):
-    # Runs on application startup
-    print("--- Starting Project Oracle Agent S5 ---")
+async def lifespan(app):
+    """Application startup/shutdown lifecycle manager."""
+    logger.info("Starting application...")
     app_state["http_client"] = httpx.AsyncClient(timeout=30.0)
-    # Initialize the agent on startup
-    app_state["s5_agent"] = get_s5_agent()
-    print("--- Agent Initialized. Service is ready. ---")
-    
+    app_state["s5_agent"] = get_s5_agent() # Initialize the agent singleton on startup
+    logger.info("Application startup complete.")
     yield
-    
-    # Runs on application shutdown
-    print("--- Shutting down service ---")
-    await app_state["s5_agent"].shutdown()
-    await app_state["http_client"].aclose()
-    print("--- Shutdown complete ---")
-
+    logger.info("Shutting down application...")
+    agent = app_state.get("s5_agent")
+    if agent and hasattr(agent, "shutdown"):
+        await agent.shutdown()
+    client = app_state.get("http_client")
+    if client:
+        await client.aclose()
+    logger.info("Application shutdown complete.")
 
 @lru_cache(maxsize=1)
-def get_search_service() -> SearchService:
-    """Provides a singleton instance of the SearchService."""
-    return SearchService()
-
+def get_settings() -> AppSettings:
+    """Lazily load and cache application settings."""
+    return AppSettings()
 
 @lru_cache(maxsize=1)
 def get_connectors() -> Dict[Platform, BaseConnector]:
-    """
-    Initializes and returns a cached dictionary of all available connectors.
-    """
-    client = app_state["http_client"]
-    
-    connectors = {}
-    try:
-        # We wrap each connector in a try/except block so that a missing
-        # API key for one service doesn't prevent the whole app from starting.
-        connectors[Platform.YOUTUBE] = YouTubeConnector(settings=settings, client=client)
-    except ValueError as e:
-        print(f"Warning: Could not initialize YouTubeConnector: {e}")
+    """Initialize and cache platform connectors."""
+    settings = get_settings()
+    http_client = app_state.get("http_client")
+    if not http_client:
+        raise RuntimeError("HTTP client is not initialized.")
 
-    # Add other connectors here as they are built
-    # try:
-    #     connectors[Platform.TWITTER] = TwitterConnector(settings=settings, client=client)
-    # except ValueError as e:
-    #     print(f"Warning: Could not initialize TwitterConnector: {e}")
-        
+    connectors: Dict[Platform, BaseConnector] = {}
+    if settings.YOUTUBE_API_KEY:
+        connectors[Platform.YOUTUBE] = YouTubeConnector(settings=settings, client=http_client)
+    if settings.INSTAGRAM_USERNAME and settings.INSTAGRAM_PASSWORD:
+        connectors[Platform.INSTAGRAM] = InstagramConnector(settings=settings, client=http_client)
+    
+    logger.info(f"Initialized connectors: {[p.value for p in connectors.keys()]}")
     return connectors
 
+@lru_cache(maxsize=1)
+def get_search_service() -> SearchService:
+    """Provide a singleton instance of the SearchService."""
+    return SearchService()
 
 @lru_cache(maxsize=1)
 def get_s5_agent() -> S5SearchAgent:
-    """
-    Provides a singleton instance of the S5SearchAgent for the application's lifespan.
-    This ensures that its internal state (like cache and performance metrics) is maintained.
-    """
+    """Create and provide a singleton instance of the S5SearchAgent."""
     return S5SearchAgent(
         connectors=get_connectors(),
         search_service=get_search_service()
-        # We can configure the agent from settings here if needed
-        # cache_ttl_seconds=settings.CACHE_TTL,
     )
+
+def get_agent() -> S5SearchAgent:
+    """Dependency provider that retrieves the agent instance from the app state."""
+    agent = app_state.get("s5_agent")
+    if not agent:
+        raise RuntimeError("S5SearchAgent not found in application state.")
+    return agent

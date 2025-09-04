@@ -46,6 +46,7 @@ class ContentCategory(str, Enum):
     SCIENCE = "science"
     ART = "art"
     COMEDY = "comedy"
+    FILM = "film"  # Added for YouTube film content
     OTHER = "other"
 
 
@@ -57,6 +58,11 @@ class EngagementMetrics(BaseModel):
     avg_comments_per_content: Optional[float] = Field(None, ge=0.0, description="Average comments per piece of content")
     content_frequency: Optional[str] = Field(None, description="Upload/posting frequency (e.g., 'Daily', 'Weekly')")
     last_activity: Optional[datetime] = Field(None, description="Last content upload/post date")
+    
+    # Enhanced YouTube-specific engagement metrics
+    most_popular_content_views: Optional[int] = Field(None, ge=0, description="Views on most popular content")
+    content_consistency_score: Optional[float] = Field(None, ge=0.0, le=1.0, description="Content consistency score")
+    upload_frequency_days: Optional[float] = Field(None, ge=0.0, description="Average days between uploads")
 
 
 class SocialMetrics(BaseModel):
@@ -74,6 +80,11 @@ class SocialMetrics(BaseModel):
     playlist_count: Optional[int] = Field(None, ge=0, description="Number of playlists (YouTube)")
     tweets_count: Optional[int] = Field(None, ge=0, description="Number of tweets (Twitter)")
     posts_count: Optional[int] = Field(None, ge=0, description="Number of posts (Instagram)")
+    
+    # Enhanced YouTube metrics
+    avg_views_per_video: Optional[float] = Field(None, ge=0.0, description="Average views per video (YouTube)")
+    channel_age_days: Optional[int] = Field(None, ge=0, description="Channel age in days (YouTube)")
+    subscriber_growth_rate: Optional[float] = Field(None, description="Estimated subscriber growth rate")
 
 
 class ProfileMetadata(BaseModel):
@@ -88,6 +99,10 @@ class ProfileMetadata(BaseModel):
     
     # Platform-specific data
     custom_fields: Dict[str, Any] = Field(default_factory=dict, description="Platform-specific additional data")
+    
+    # Enhanced YouTube-specific fields
+    topic_categories: List[str] = Field(default_factory=list, description="YouTube topic categories")
+    keywords: List[str] = Field(default_factory=list, description="Channel keywords/tags")
     
     # Data quality indicators
     profile_completeness: Optional[float] = Field(None, ge=0.0, le=1.0, description="Profile completeness score")
@@ -115,7 +130,7 @@ class CreatorProfile(BaseModel):
     # Verification and status
     is_verified: bool = Field(default=False, description="Platform verification status")
     verification_status: VerificationStatus = Field(default=VerificationStatus.UNKNOWN)
-    account_type: Optional[str] = Field(None, description="Account type (personal, business, etc.)")
+    account_type: Optional[str] = Field(None, description="Account type (personal, business, enterprise, etc.)")
     is_active: bool = Field(default=True, description="Whether the account appears to be active")
     
     # Comprehensive metrics
@@ -143,11 +158,27 @@ class CreatorProfile(BaseModel):
     def video_count(self) -> Optional[int]:
         return self.social_metrics.video_count
     
+    # Enhanced properties for YouTube connector compatibility
+    @property
+    def subscriber_count(self) -> Optional[int]:
+        """Alias for followers_count for YouTube compatibility."""
+        return self.social_metrics.followers_count
+    
+    @property
+    def avg_views_per_video(self) -> Optional[float]:
+        """YouTube-specific average views per video."""
+        return self.social_metrics.avg_views_per_video or self.engagement_metrics.avg_views_per_content
+    
+    @property
+    def channel_age_days(self) -> Optional[int]:
+        """YouTube channel age in days."""
+        return self.social_metrics.channel_age_days
+    
     @validator('name', 'handle', 'bio', pre=True)
     def strip_and_prepare_strings(cls, v):
         if isinstance(v, str):
             stripped = v.strip()
-        # For bio, an empty string should become None
+            # For bio, an empty string should become None
             if not stripped:
                 return None
             return stripped
@@ -237,6 +268,14 @@ class SearchFilter(BaseModel):
     min_engagement_rate: Optional[float] = Field(None, ge=0.0, le=100.0)
     max_engagement_rate: Optional[float] = Field(None, ge=0.0, le=100.0)
     
+    # Enhanced YouTube-specific filters
+    min_video_count: Optional[int] = Field(None, ge=0)
+    max_video_count: Optional[int] = Field(None, ge=0)
+    min_avg_views: Optional[int] = Field(None, ge=0)
+    max_avg_views: Optional[int] = Field(None, ge=0)
+    min_channel_age_days: Optional[int] = Field(None, ge=0)
+    max_channel_age_days: Optional[int] = Field(None, ge=0)
+    
     verified_only: bool = Field(default=False)
     active_only: bool = Field(default=True)
     
@@ -244,12 +283,22 @@ class SearchFilter(BaseModel):
     created_before: Optional[datetime] = None
     last_active_after: Optional[datetime] = None
     
+    # YouTube-specific filters
+    upload_frequency: Optional[str] = Field(None, description="Filter by upload frequency")
+    content_consistency_min: Optional[float] = Field(None, ge=0.0, le=1.0)
+    
     @model_validator(mode='after')
     def validate_ranges(self) -> Self:
         if self.min_followers is not None and self.max_followers is not None and self.max_followers < self.min_followers:
             raise ValueError('max_followers must be greater than or equal to min_followers')
         if self.min_engagement_rate is not None and self.max_engagement_rate is not None and self.max_engagement_rate < self.min_engagement_rate:
             raise ValueError('max_engagement_rate must be greater than or equal to min_engagement_rate')
+        if self.min_video_count is not None and self.max_video_count is not None and self.max_video_count < self.min_video_count:
+            raise ValueError('max_video_count must be greater than or equal to min_video_count')
+        if self.min_avg_views is not None and self.max_avg_views is not None and self.max_avg_views < self.min_avg_views:
+            raise ValueError('max_avg_views must be greater than or equal to min_avg_views')
+        if self.min_channel_age_days is not None and self.max_channel_age_days is not None and self.max_channel_age_days < self.min_channel_age_days:
+            raise ValueError('max_channel_age_days must be greater than or equal to min_channel_age_days')
         return self
 
 
@@ -296,3 +345,40 @@ class SearchResponse(BaseModel):
     
     class Config:
         use_enum_values = True
+
+
+# YouTube-specific configuration and response models for the connector
+class YouTubeSearchConfig(BaseModel):
+    """Configuration for YouTube search operations."""
+    max_results: int = Field(default=25, ge=1, le=50)
+    order: str = Field(default="relevance", pattern=r"^(relevance|viewCount|date|rating|title|videoCount)$")
+    region_code: Optional[str] = Field(None, min_length=2, max_length=2, description="ISO 3166-1 alpha-2 country code")
+    relevance_language: Optional[str] = Field(None, min_length=2, max_length=5, description="ISO 639-1 language code")
+    published_after: Optional[datetime] = Field(None, description="Only return channels created after this date")
+    video_definition: Optional[str] = Field(None, pattern=r"^(any|high|standard)$")
+    video_duration: Optional[str] = Field(None, pattern=r"^(any|long|medium|short)$")
+
+
+class YouTubeMetrics(BaseModel):
+    """Detailed YouTube-specific metrics."""
+    subscriber_count: Optional[int] = Field(None, ge=0)
+    total_views: Optional[int] = Field(None, ge=0)
+    video_count: Optional[int] = Field(None, ge=0)
+    avg_views_per_video: Optional[float] = Field(None, ge=0.0)
+    engagement_rate: Optional[float] = Field(None, ge=0.0, le=100.0)
+    upload_frequency: Optional[str] = None
+    last_upload: Optional[datetime] = None
+    most_popular_video_views: Optional[int] = Field(None, ge=0)
+    channel_age_days: Optional[int] = Field(None, ge=0)
+    content_consistency_score: Optional[float] = Field(None, ge=0.0, le=1.0)
+
+
+class YouTubeConnectorStats(BaseModel):
+    """Statistics and health information for the YouTube connector."""
+    api_calls_made: int = Field(ge=0)
+    estimated_quota_used: int = Field(ge=0)
+    cache_entries: int = Field(ge=0)
+    cache_hit_potential: float = Field(ge=0.0, le=1.0)
+    status: str = Field(pattern=r"^(healthy|degraded|unhealthy)$")
+    last_check: datetime
+    api_accessible: bool = Field(default=True)
