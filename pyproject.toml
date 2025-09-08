@@ -1,0 +1,65 @@
+[build-system]
+requires = ["setuptools>=65.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "project-oracle"
+version = "0.1.0"
+description = "AI-powered content creator discovery and analysis platform"
+authors = [
+    {name = "Your Name", email = "your.email@example.com"}
+]
+dependencies = [
+    "fastapi",
+    "uvicorn",
+    "sqlalchemy",
+    "asyncpg",
+    "aiosqlite",
+    "alembic",
+    "pydantic",
+    "pydantic-settings",
+    "python-dotenv",
+    "httpx",
+    "pytest",
+    "pytest-asyncio",
+    "celery",
+    "redis",
+    "tenacity",
+    "rapidfuzz",
+    "instagrapi",
+    "google-api-python-client",
+    "youtube-transcript-api",
+    "tweepy",
+    "beautifulsoup4",
+    "lxml",
+    "selenium",
+    "openai",
+    "tiktoken",
+    "numpy",
+    "scikit-learn",
+    "transformers",
+    "torch",
+]
+requires-python = ">=3.9"
+
+[project.optional-dependencies]
+dev = [
+    "black",
+    "isort", 
+    "flake8",
+    "mypy",
+    "pre-commit",
+]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["app*"]
+exclude = ["tests*"]
+
+[tool.black]
+line-length = 120
+target-version = ['py39']
+
+[tool.isort]
+profile = "black"
+line_length = 120

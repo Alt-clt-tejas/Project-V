@@ -7,8 +7,6 @@ from dataclasses import dataclass
 import re
 
 import httpx
-from googleapiclient.discovery import build
-from googleapiclient.errors import HttpError
 from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
 
 from app.config.base import AppSettings
@@ -91,10 +89,17 @@ class YouTubeMetrics:
     content_consistency_score: Optional[float] = None
 
 
+class YouTubeAPIError(Exception):
+    """Custom exception for YouTube API errors."""
+    def __init__(self, message: str, status_code: Optional[int] = None):
+        super().__init__(message)
+        self.status_code = status_code
+
+
 class YouTubeConnector(BaseConnector):
     """
-    Enterprise-grade YouTube Connector with comprehensive data extraction,
-    advanced error handling, caching, and rich metrics calculation.
+    Enterprise-grade YouTube Connector using direct httpx requests with comprehensive 
+    data extraction, advanced error handling, caching, and rich metrics calculation.
     """
     
     def __init__(self, settings: AppSettings, client: httpx.AsyncClient):
@@ -103,11 +108,9 @@ class YouTubeConnector(BaseConnector):
         if not settings.YOUTUBE_API_KEY:
             raise ValueError("YOUTUBE_API_KEY must be configured.")
         
-        self.youtube_service = build(
-            'youtube', 'v3',
-            developerKey=settings.YOUTUBE_API_KEY.get_secret_value(),
-            cache_discovery=False
-        )
+        # Store API configuration
+        self.api_key = settings.YOUTUBE_API_KEY.get_secret_value()
+        self.base_url = "https://www.googleapis.com/youtube/v3"
         
         # Rate limiting and performance tracking
         self._request_semaphore = asyncio.Semaphore(10)  # Concurrent request limit
@@ -171,17 +174,17 @@ class YouTubeConnector(BaseConnector):
             logger.info(f"Successfully created {len(profiles)} creator profiles")
             return profiles
             
-        except HttpError as e:
-            error_msg = f"YouTube API HTTP error {e.resp.status}: {e.content}"
+        except YouTubeAPIError as e:
+            error_msg = f"YouTube API error: {e}"
             logger.error(error_msg, extra={"platform": self.platform.value})
             
             # Handle specific API errors gracefully
-            if e.resp.status == 403:
+            if e.status_code == 403:
                 raise ConnectorException("YouTube API quota exceeded or access denied", self.platform)
-            elif e.resp.status == 400:
-                raise ConnectorException(f"Invalid YouTube API request: {e.content}", self.platform)
+            elif e.status_code == 400:
+                raise ConnectorException(f"Invalid YouTube API request: {e}", self.platform)
             else:
-                raise ConnectorException(f"YouTube API error: {e.reason}", self.platform)
+                raise ConnectorException(f"YouTube API error: {e}", self.platform)
                 
         except Exception as e:
             logger.error(
@@ -194,17 +197,17 @@ class YouTubeConnector(BaseConnector):
     @retry(
         stop=stop_after_attempt(3),
         wait=wait_exponential(multiplier=1, min=2, max=8),
-        retry=retry_if_exception_type(HttpError)
+        retry=retry_if_exception_type(YouTubeAPIError)
     )
-    async def _api_call(
+    async def _make_youtube_request(
         self, 
-        func, 
-        cache_key: Optional[str] = None, 
-        quota_cost: int = 1,
-        **kwargs
-    ) -> List[Dict[str, Any]]:
+        endpoint: str, 
+        params: Dict[str, Any],
+        cache_key: Optional[str] = None,
+        quota_cost: int = 1
+    ) -> Dict[str, Any]:
         """
-        Enhanced API call wrapper with caching, retry logic, and quota tracking.
+        Make direct HTTP request to YouTube API using httpx with caching and retry logic.
         """
         # Check cache first
         if cache_key:
@@ -212,13 +215,41 @@ class YouTubeConnector(BaseConnector):
             if cached_result is not None:
                 return cached_result
 
+        # Add API key to parameters
+        params['key'] = self.api_key
+        url = f"{self.base_url}/{endpoint}"
+
         async with self._request_semaphore:
             try:
                 self._api_call_count += 1
                 self._quota_usage += quota_cost
                 
-                response = await asyncio.to_thread(func(**kwargs).execute)
-                result = response.get('items', [])
+                response = await self.client.get(url, params=params, timeout=30.0)
+                
+                # Handle HTTP errors
+                if response.status_code == 429:  # Rate limit
+                    logger.warning("YouTube API rate limit hit, retrying...")
+                    raise YouTubeAPIError("Rate limit exceeded", 429)
+                elif response.status_code == 403:
+                    error_data = response.json() if response.headers.get('content-type', '').startswith('application/json') else {}
+                    error_message = error_data.get('error', {}).get('message', 'Access denied')
+                    logger.error(f"YouTube API access denied: {error_message}")
+                    raise YouTubeAPIError(f"Access denied: {error_message}", 403)
+                elif response.status_code == 400:
+                    error_data = response.json() if response.headers.get('content-type', '').startswith('application/json') else {}
+                    error_message = error_data.get('error', {}).get('message', 'Bad request')
+                    logger.error(f"YouTube API bad request: {error_message}")
+                    raise YouTubeAPIError(f"Bad request: {error_message}", 400)
+                elif not response.is_success:
+                    logger.error(f"YouTube API HTTP error {response.status_code}: {response.text}")
+                    raise YouTubeAPIError(f"HTTP {response.status_code}: {response.text}", response.status_code)
+                
+                # Parse response
+                try:
+                    result = response.json()
+                except Exception as e:
+                    logger.error(f"Failed to parse YouTube API response as JSON: {e}")
+                    raise YouTubeAPIError(f"Invalid JSON response: {e}")
                 
                 # Cache the result
                 if cache_key:
@@ -227,19 +258,17 @@ class YouTubeConnector(BaseConnector):
                 logger.debug(f"YouTube API call successful. Quota used: {quota_cost}")
                 return result
                 
-            except HttpError as e:
-                if e.resp.status == 429:  # Rate limit
-                    logger.warning("YouTube API rate limit hit, retrying...")
-                    raise
-                elif e.resp.status in [400, 403]:
-                    logger.error(f"YouTube API error {e.resp.status}: {e.content}")
-                    return []
-                else:
-                    logger.error(f"YouTube API HTTP error {e.resp.status}: {e.content}")
-                    raise
+            except httpx.TimeoutException:
+                logger.error("YouTube API request timed out")
+                raise YouTubeAPIError("Request timed out")
+            except httpx.RequestError as e:
+                logger.error(f"YouTube API request error: {e}")
+                raise YouTubeAPIError(f"Request error: {e}")
+            except YouTubeAPIError:
+                raise  # Re-raise YouTube API errors
             except Exception as e:
                 logger.error(f"Unexpected error in YouTube API call: {e}")
-                raise
+                raise YouTubeAPIError(f"Unexpected error: {e}")
 
     def _get_from_cache(self, cache_key: str) -> Optional[Any]:
         """Retrieve data from cache if not expired."""
@@ -284,12 +313,14 @@ class YouTubeConnector(BaseConnector):
 
         cache_key = f"search_{hash(str(sorted(search_params.items())))}"
         
-        return await self._api_call(
-            self.youtube_service.search().list,
+        response = await self._make_youtube_request(
+            'search',
+            search_params,
             cache_key=cache_key,
-            quota_cost=100,  # Search costs 100 quota units
-            **search_params
+            quota_cost=100  # Search costs 100 quota units
         )
+        
+        return response.get('items', [])
 
     async def _get_channel_details(self, channel_ids: List[str]) -> List[Dict[str, Any]]:
         """Fetch comprehensive channel details in optimized batches."""
@@ -302,14 +333,19 @@ class YouTubeConnector(BaseConnector):
             try:
                 cache_key = f"channels_{hash(','.join(sorted(batch_ids)))}"
                 
-                details = await self._api_call(
-                    self.youtube_service.channels().list,
+                params = {
+                    'part': 'snippet,statistics,brandingSettings,topicDetails,status,contentDetails',
+                    'id': ','.join(batch_ids)
+                }
+                
+                response = await self._make_youtube_request(
+                    'channels',
+                    params,
                     cache_key=cache_key,
-                    quota_cost=1,  # Channel details cost 1 quota unit per call
-                    part='snippet,statistics,brandingSettings,topicDetails,status,contentDetails',
-                    id=','.join(batch_ids)
+                    quota_cost=1  # Channel details cost 1 quota unit per call
                 )
                 
+                details = response.get('items', [])
                 all_details.extend(details)
                 logger.debug(f"Retrieved details for batch of {len(details)} channels")
                 
@@ -335,17 +371,22 @@ class YouTubeConnector(BaseConnector):
                     # Get recent video IDs
                     cache_key = f"channel_videos_{channel_id}"
                     
-                    search_items = await self._api_call(
-                        self.youtube_service.search().list,
+                    search_params = {
+                        'channelId': channel_id,
+                        'part': 'id,snippet',
+                        'type': 'video',
+                        'order': 'date',
+                        'maxResults': 10
+                    }
+                    
+                    search_response = await self._make_youtube_request(
+                        'search',
+                        search_params,
                         cache_key=cache_key,
-                        quota_cost=100,
-                        channelId=channel_id,
-                        part='id,snippet',
-                        type='video',
-                        order='date',
-                        maxResults=10
+                        quota_cost=100
                     )
                     
+                    search_items = search_response.get('items', [])
                     if not search_items:
                         return channel_id, []
                     
@@ -355,14 +396,19 @@ class YouTubeConnector(BaseConnector):
                         return channel_id, []
                     
                     # Get video statistics
-                    video_details = await self._api_call(
-                        self.youtube_service.videos().list,
+                    video_params = {
+                        'part': 'snippet,statistics,contentDetails',
+                        'id': ','.join(video_ids)
+                    }
+                    
+                    video_response = await self._make_youtube_request(
+                        'videos',
+                        video_params,
                         cache_key=f"video_stats_{hash(','.join(video_ids))}",
-                        quota_cost=1,
-                        part='snippet,statistics,contentDetails',
-                        id=','.join(video_ids)
+                        quota_cost=1
                     )
                     
+                    video_details = video_response.get('items', [])
                     return channel_id, video_details
                     
                 except Exception as e:
@@ -393,15 +439,20 @@ class YouTubeConnector(BaseConnector):
         for channel_id in channel_ids:
             try:
                 # Get channel's playlists for content organization insights
-                playlists = await self._api_call(
-                    self.youtube_service.playlists().list,
+                playlist_params = {
+                    'part': 'snippet,contentDetails',
+                    'channelId': channel_id,
+                    'maxResults': 10
+                }
+                
+                playlist_response = await self._make_youtube_request(
+                    'playlists',
+                    playlist_params,
                     cache_key=f"playlists_{channel_id}",
-                    quota_cost=1,
-                    part='snippet,contentDetails',
-                    channelId=channel_id,
-                    maxResults=10
+                    quota_cost=1
                 )
                 
+                playlists = playlist_response.get('items', [])
                 insights[channel_id] = {
                     'playlists': playlists,
                     # Could add more insights here (comments, community posts, etc.)
@@ -895,14 +946,19 @@ class YouTubeConnector(BaseConnector):
             
             # If no exact match, try direct API call with forUsername (deprecated but sometimes works)
             try:
-                channel_details = await self._api_call(
-                    self.youtube_service.channels().list,
+                params = {
+                    'part': 'snippet,statistics,brandingSettings,topicDetails,status',
+                    'forUsername': clean_handle
+                }
+                
+                response = await self._make_youtube_request(
+                    'channels',
+                    params,
                     cache_key=f"channel_by_username_{clean_handle}",
-                    quota_cost=1,
-                    part='snippet,statistics,brandingSettings,topicDetails,status',
-                    forUsername=clean_handle
+                    quota_cost=1
                 )
                 
+                channel_details = response.get('items', [])
                 if channel_details:
                     video_details_map = await self._get_recent_videos_for_channels([channel_details[0]['id']])
                     channel_insights = await self._get_channel_insights([channel_details[0]['id']])
@@ -1011,15 +1067,19 @@ class YouTubeConnector(BaseConnector):
         """Perform a health check of the YouTube connector."""
         try:
             # Make a simple API call to test connectivity
-            test_result = await self._api_call(
-                self.youtube_service.channels().list,
-                quota_cost=1,
-                part='snippet',
-                mine=False,
-                id='UC_x5XG1OV2P6uZZ5FSM9Ttw'  # Google Developers channel
+            params = {
+                'part': 'snippet',
+                'id': 'UC_x5XG1OV2P6uZZ5FSM9Ttw'  # Google Developers channel
+            }
+            
+            response = await self._make_youtube_request(
+                'channels',
+                params,
+                quota_cost=1
             )
             
-            status = "healthy" if test_result is not None else "degraded"
+            test_result = response.get('items', [])
+            status = "healthy" if test_result else "degraded"
             
             return {
                 "status": status,

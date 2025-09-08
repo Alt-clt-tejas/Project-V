@@ -1,7 +1,8 @@
 # app/config/base.py
 from pathlib import Path
 from typing import Optional, List
-from pydantic import SecretStr, validator
+from pydantic import SecretStr, validator, PostgresDsn
+from typing import Union
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 class AppSettings(BaseSettings):
@@ -21,9 +22,11 @@ class AppSettings(BaseSettings):
     DEBUG: bool = False
     LOG_LEVEL: str = "INFO"
 
-    # API Keys & Secrets
+    # API Keys & Secrets  
+    DATABASE_URL: Optional[Union[PostgresDsn, str]] = None
     YOUTUBE_API_KEY: Optional[SecretStr] = None
     TWITTER_BEARER_TOKEN: Optional[SecretStr] = None
+    
 
     # Instagram Configuration
     INSTAGRAM_USERNAME: Optional[SecretStr] = None
@@ -45,3 +48,5 @@ class AppSettings(BaseSettings):
     @validator("INSTAGRAM_RATE_LIMIT_DELAY")
     def clamp_rate_limit_delay(cls, v: float) -> float:
         return max(0.5, min(v, 10.0))
+
+settings = AppSettings()

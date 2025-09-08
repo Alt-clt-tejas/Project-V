@@ -2,16 +2,14 @@
 import logging
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-
+from app.api import search, health, metrics, enrichment
 from app.config.base import AppSettings
 from app.api.dependencies import lifespan, get_settings
 
-# --- START OF FIX ---
-# Use explicit, absolute imports for each router. This is the robust pattern.
 from app.api.search import router as search_router
 from app.api.health import router as health_router
 from app.api.metrics import router as metrics_router
-# --- END OF FIX ---
+from app.api.enrichment import router as enrichment_router
 
 from app.middleware.error_handler import ErrorHandlerMiddleware
 from app.middleware.metrics_middleware import MetricsMiddleware
@@ -45,6 +43,7 @@ app.add_middleware(
 # --- API Router Configuration ---
 # Use the imported router objects directly.
 app.include_router(search_router, prefix="/api/v1")
+app.include_router(enrichment_router, prefix="/api/v1")  # Added enrichment router
 app.include_router(health_router, prefix="/api/v1")
 app.include_router(metrics_router, prefix="/api/v1")
 
@@ -57,7 +56,8 @@ async def root():
         "status": "running",
         "version": "1.0.0",
         "docs": app.docs_url,
-        "health_check": "/api/v1/health/ready"
+        "health_check": "/api/v1/health/ready",
+        "enrichment_health": "/api/v1/enrich/health"  # Added enrichment health endpoint
     }
 
 logger.info(f"'{settings.APP_NAME}' application initialization complete.")
