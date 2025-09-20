@@ -11,7 +11,7 @@ from sqlalchemy import select
 
 from app.database.session import get_db_session
 from app.services.enrichment_service import EnrichmentService, EnrichmentResult, EnrichmentStatus
-from app.database.model import VideoEnrichment, Video
+from app.database.models import VideoEnrichment, Video
 
 logger = logging.getLogger(__name__)
 

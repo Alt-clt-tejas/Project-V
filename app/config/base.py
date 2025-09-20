@@ -1,52 +1,46 @@
 # app/config/base.py
+import os
 from pathlib import Path
 from typing import Optional, List
-from pydantic import SecretStr, validator, PostgresDsn
-from typing import Union
+from pydantic import SecretStr, validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 class AppSettings(BaseSettings):
     """
-    Unified application settings using pydantic v2.
-    Loaded from environment variables with validation.
+    Intelligent, environment-aware application settings.
+    It first loads the main .env file to determine the APP_ENV,
+    and then loads the specific .env.{APP_ENV} file.
     """
+    # This first setting is loaded from the main .env file
+    APP_ENV: str = "prod"
+
     model_config = SettingsConfigDict(
-        env_file=".env",
+        # This tells pydantic-settings to look for files like .env.prod or .env.dev
+        env_file=f".env.{os.getenv('APP_ENV', 'prod')}",
         env_file_encoding="utf-8",
         case_sensitive=True,
         extra="ignore"
     )
 
+    # All settings below will be loaded from the environment-specific file
+    # (.env.dev or .env.prod)
+    
     # Basic Application Configuration
-    APP_NAME: str = "CreatorSearch Service"
+    APP_NAME: str = "Project Oracle"
     DEBUG: bool = False
     LOG_LEVEL: str = "INFO"
+    DATABASE_URL: str
 
-    # API Keys & Secrets  
-    DATABASE_URL: Optional[Union[PostgresDsn, str]] = None
+    # API Keys & Secrets
     YOUTUBE_API_KEY: Optional[SecretStr] = None
-    TWITTER_BEARER_TOKEN: Optional[SecretStr] = None
-    
+    # ... other settings ...
 
-    # Instagram Configuration
-    INSTAGRAM_USERNAME: Optional[SecretStr] = None
-    INSTAGRAM_PASSWORD: Optional[SecretStr] = None
-    INSTAGRAM_SESSION_PATH: str = "./sessions"
-    INSTAGRAM_RATE_LIMIT_DELAY: float = 1.5
-    INSTAGRAM_MAX_LOGIN_ATTEMPTS: int = 3
-    INSTAGRAM_LOGIN_COOLDOWN: int = 300  # seconds
+# The AppSettings class needs to be instantiated after we determine the APP_ENV
+# We use a small helper function to manage this.
+def get_settings() -> AppSettings:
+    from dotenv import load_dotenv
+    # Load the main .env file first to get the APP_ENV
+    load_dotenv(".env")
+    return AppSettings()
 
-    # Security Settings
-    ALLOWED_HOSTS: List[str] = ["localhost", "127.0.0.1"]
-    CORS_ORIGINS: List[str] = ["http://localhost:3000", "http://localhost:8000"]
-
-    @validator("INSTAGRAM_SESSION_PATH")
-    def ensure_session_directory(cls, v: str) -> str:
-        Path(v).mkdir(parents=True, exist_ok=True)
-        return v
-
-    @validator("INSTAGRAM_RATE_LIMIT_DELAY")
-    def clamp_rate_limit_delay(cls, v: float) -> float:
-        return max(0.5, min(v, 10.0))
-
-settings = AppSettings()
+settings = get_settings()
