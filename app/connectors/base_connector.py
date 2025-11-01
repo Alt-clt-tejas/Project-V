@@ -1,12 +1,15 @@
 # app/connectors/base_connector.py
 import abc
-from typing import List
+import logging
+from typing import List, Optional, Dict, Any
 
 import httpx
 from tenacity import retry, stop_after_attempt, wait_exponential
 
 from app.config.base import AppSettings
 from app.domains.search.schemas import CreatorProfile, Platform
+
+logger = logging.getLogger(__name__)
 
 
 class BaseConnector(abc.ABC):
@@ -26,6 +29,15 @@ class BaseConnector(abc.ABC):
         self.settings = settings
         self.client = client
 
+    async def close(self):
+        """Clean up resources."""
+        try:
+            if self.client:
+                await self.client.aclose()
+        except Exception as e:
+            logger.error(f"Error closing connector: {e}")
+            # Don't raise during cleanup
+
     @property
     @abc.abstractmethod
     def platform(self) -> Platform:
@@ -33,12 +45,21 @@ class BaseConnector(abc.ABC):
         raise NotImplementedError
 
     @abc.abstractmethod
-    async def search(self, query: str) -> List[CreatorProfile]:
+    async def search(
+        self, 
+        query: str,
+        search_type: str = "creator",
+        filters: Optional[dict] = None,
+        limit: int = 10
+    ) -> List[CreatorProfile]:
         """
-        Performs a search for a creator on the specific platform.
+        Performs a search for creators on the specific platform.
 
         Args:
-            query: The search query (name, handle, etc.).
+            query: The search query (name, handle, etc.)
+            search_type: Type of search to perform (creator, topic, etc.)
+            filters: Optional filters to apply to the search
+            limit: Maximum number of results to return
 
         Returns:
             A list of standardized CreatorProfile objects.

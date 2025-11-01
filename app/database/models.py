@@ -98,6 +98,7 @@ class CreatorProfileDB(Base):
     creator_id = Column(Integer, ForeignKey('public.creators.id', ondelete="CASCADE"), unique=True)
     avg_views = Column(Float)
     avg_engagement_rate = Column(Float)
+    embedding = Column(VECTOR(384))  # Text embedding for semantic search
     dominant_language = Column(Text)
     dominant_tone = Column(Text)
     topics = Column(ARRAY(Text))

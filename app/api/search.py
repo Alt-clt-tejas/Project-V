@@ -1,154 +1,83 @@
 # app/api/search.py
+import logging
 import time
-from typing import List, Optional
-
+from typing import List
 from fastapi import APIRouter, Depends, Body, HTTPException
-from pydantic import BaseModel
-from starlette.status import HTTP_503_SERVICE_UNAVAILABLE
 
 from app.agents.s5_search_agent import S5SearchAgent
 from app.api.dependencies import get_agent
-from app.domains.search.schemas import (
-    SearchQuery,
-    SearchResponse,
-    Platform,
-    SearchType,
-    SearchFilter
-)
+# Import the necessary schemas
+from app.domains.search.schemas import SearchQuery, SearchResponse
 
-# Use a distinct name for the router in this module
-router = APIRouter(prefix="/search", tags=["Search"])
+logger = logging.getLogger(__name__)
+router = APIRouter()
 
-# --- Public-Facing API Models (DTOs) ---
-class PublicSearchResult(BaseModel):
-    """The lean, public representation of a search result."""
-    platform: Platform
-    name: str
-    handle: str
-    match_confidence: float
-    follower_count: Optional[int] = None
-    profile_url: str
-    match_reasons: Optional[List[str]] = None
-
-class PublicSearchResponse(BaseModel):
-    """The lean, public representation of a full search response."""
-    results: List[PublicSearchResult]
-    total_count: int
-    search_duration_ms: float
-    suggestions: List[str]
-
-# --- API Endpoints ---
-@router.post(
-    "/",
-    response_model=PublicSearchResponse,
-    summary="Perform a Comprehensive Creator Search",
-)
-async def comprehensive_search(
+# Note the trailing slash to prevent the 307 redirect
+@router.post("/search/", response_model=SearchResponse)
+async def search_creators(
     query: SearchQuery = Body(...),
-    # --- START OF FIX ---
-    # Use the correct dependency injection function
     agent: S5SearchAgent = Depends(get_agent),
-    # --- END OF FIX ---
 ):
     """
-    Accepts a complex SearchQuery object for powerful filtering, sorting, and discovery.
-    Returns a lean, public-facing response.
+    Performs a comprehensive creator search and returns a ranked list.
+    
+    The endpoint leverages the S5SearchAgent's built-in response builder
+    to return complete SearchResponse objects with nested profile data.
+    
+    Args:
+        query (SearchQuery): Contains search parameters including query string,
+                           search type, filters, and limits
+        agent (S5SearchAgent): Injected search agent dependency
+    
+    Returns:
+        SearchResponse: Complete response object with nested creator profiles
+        
+    Raises:
+        HTTPException: If search operation fails
     """
     try:
         start_time = time.time()
-        
-        domain_response: SearchResponse = await agent.search(
+
+        # Execute search through the agent
+        search_results = await agent.search(
             query=query.query,
-            platforms=query.filters.platforms if query.filters and query.filters.platforms else list(Platform),
             search_type=query.search_type,
-            filters=query.filters
+            filters=query.filters,
+            limit=query.limit
         )
         
-        end_time = time.time()
-        duration_ms = (end_time - start_time) * 1000
+        # Calculate search duration
+        duration_ms = (time.time() - start_time) * 1000
 
-        public_results = []
-        for result in domain_response.results:
-            profile = result.profile
-            reasons = result.match_details.match_reasons if result.match_details else None
-            follower_count = profile.social_metrics.followers_count if profile.social_metrics else None
+        # Create platform and category breakdowns
+        platform_counts = {}
+        category_counts = {}
+        
+        # Process results and build breakdowns
+        for result in search_results:
+            # Update platform counts
+            platform = result.profile.platform
+            platform_counts[platform] = platform_counts.get(platform, 0) + 1
             
-            public_results.append(
-                PublicSearchResult(
-                    platform=profile.platform,
-                    name=profile.name,
-                    handle=profile.handle,
-                    match_confidence=result.match_confidence,
-                    follower_count=follower_count,
-                    profile_url=str(profile.profile_url),
-                    match_reasons=reasons
-                )
-            )
+            # Update category counts for each category in the profile
+            for category in result.profile.metadata.categories:
+                category_counts[category] = category_counts.get(category, 0) + 1
 
-        return PublicSearchResponse(
-            results=public_results,
-            total_count=domain_response.total_count,
-            search_duration_ms=duration_ms,
-            suggestions=domain_response.suggestions
-        )
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"An unexpected error occurred in the search agent: {e}")
-
-@router.post(
-    "/simple",
-    response_model=PublicSearchResponse,
-    summary="Simple Creator Search",
-)
-async def simple_search(
-    query: str = Body(..., embed=True),
-    platforms: Optional[List[Platform]] = Body(default=None),
-    search_type: SearchType = Body(default=SearchType.CREATOR),
-    min_followers: Optional[int] = Body(default=None),
-    verified_only: bool = Body(default=False),
-    agent: S5SearchAgent = Depends(get_agent),
-):
-    """
-    A simplified search endpoint that accepts individual parameters.
-    """
-    try:
-        search_filter = SearchFilter(
-            platforms=platforms,
-            min_followers=min_followers,
-            verified_only=verified_only,
-            active_only=True
-        )
-        
-        domain_response: SearchResponse = await agent.search(
+        # Construct the complete SearchResponse object
+        response = SearchResponse(
+            results=search_results,
+            total_count=len(search_results),
+            page_count=1,  # We'll implement pagination later
+            current_page=1,
             query=query,
-            platforms=platforms or list(Platform),
-            search_type=search_type,
-            filters=search_filter
+            search_duration_ms=duration_ms,
+            platform_breakdown=platform_counts,
+            category_breakdown=category_counts,
+            suggestions=[],  # We'll implement suggestions later
+            related_queries=[]  # We'll implement related queries later
         )
         
-        public_results = []
-        for result in domain_response.results:
-            profile = result.profile
-            reasons = result.match_details.match_reasons if result.match_details else None
-            follower_count = profile.social_metrics.followers_count if profile.social_metrics else None
-            
-            public_results.append(
-                PublicSearchResult(
-                    platform=profile.platform,
-                    name=profile.name,
-                    handle=profile.handle,
-                    match_confidence=result.match_confidence,
-                    follower_count=follower_count,
-                    profile_url=str(profile.profile_url),
-                    match_reasons=reasons
-                )
-            )
-
-        return PublicSearchResponse(
-            results=public_results,
-            total_count=domain_response.total_count,
-            search_duration_ms=domain_response.search_duration_ms,
-            suggestions=domain_response.suggestions
-        )
-
+        return response
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Search failed: {e}")
+        logger.error(f"Critical error in search endpoint: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="An internal server error occurred during search.")

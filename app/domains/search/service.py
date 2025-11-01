@@ -5,11 +5,16 @@ from typing import List, Dict, Set, Tuple, Optional
 from dataclasses import dataclass
 from collections import Counter
 from enum import Enum
+from datetime import datetime
 
 from rapidfuzz import fuzz, process
 import unicodedata
 
-from app.domains.search.schemas import CreatorProfile, SearchResult, SearchType
+from app.domains.search.schemas import (
+    CreatorProfile, SearchResult, SearchType, SearchFilter,
+    SearchMatchDetails
+)
+from app.domains.search.repository import SearchRepository
 
 
 class ScoreWeight(Enum):
@@ -19,6 +24,7 @@ class ScoreWeight(Enum):
     PARTIAL_NAME_MATCH = 6.0
     PARTIAL_HANDLE_MATCH = 5.0
     BIO_KEYWORD_MATCH = 2.0
+    SEMANTIC_MATCH = 4.0  # Weight for semantic similarity matches
     FOLLOWER_BOOST = 1.5
     VERIFIED_BOOST = 1.2
     ENGAGEMENT_BOOST = 1.3
@@ -45,6 +51,14 @@ class ProfileScore:
     social_signals: float
     final_score: float
     match_reasons: List[str]
+
+
+class SearchService:
+    """Service handling advanced creator search functionality."""
+    
+    def __init__(self, repo: SearchRepository):
+        self.repo = repo
+        self.text_processor = TextProcessor()
 
 
 class TextProcessor:
@@ -186,6 +200,143 @@ class SearchService:
             for score in scored_profiles
         ]
     
+    async def find_creators_by_niche(
+        self,
+        query: str,
+        filters: SearchFilter,
+        limit: int = 50
+    ) -> List[SearchResult]:
+        """
+        Uses semantic search to find creators whose content and audience align
+        with a specific niche or topic area.
+        
+        Args:
+            query: The niche/topic to search for
+            filters: Additional filtering criteria
+            limit: Maximum number of results to return
+            
+        Returns:
+            List of creators ranked by semantic similarity and other factors
+        """
+        # Step 1: Calculate the niche embedding using our text embedding model
+        niche_embedding = await self._get_text_embedding(query)
+        
+        # Step 2: Find similar creators using vector similarity
+        similar_creators = await self.repo.find_similar_creators(
+            niche_embedding=niche_embedding,
+            limit=limit
+        )
+        
+        # Step 3: Score and rank the results
+        scored_creators = []
+        for creator in similar_creators:
+            # Calculate base semantic similarity score
+            similarity_score = self._calculate_semantic_similarity(
+                niche_embedding,
+                creator.embedding
+            )
+            
+            # Create profile score object
+            score = ProfileScore(
+                profile=creator.to_profile(),
+                base_score=similarity_score * ScoreWeight.SEMANTIC_MATCH.value,
+                name_similarity=0.0,  # Not used for semantic search
+                handle_similarity=0.0,  # Not used for semantic search
+                keyword_matches=0,     # Not used for semantic search
+                social_signals=self._calculate_social_signals(creator.to_profile()),
+                final_score=0.0,       # Will be calculated below
+                match_reasons=["Semantically similar content"]
+            )
+            
+            # Apply social signal boosts
+            score.final_score = score.base_score * (1 + score.social_signals)
+            scored_creators.append(score)
+        
+        # Sort by final score
+        scored_creators.sort(key=lambda x: x.final_score, reverse=True)
+        
+        # Convert to search results
+        return [
+            SearchResult(
+                profile=score.profile,
+                match_confidence=min(score.final_score, 1.0),
+                match_details={
+                    'semantic_similarity': score.base_score / ScoreWeight.SEMANTIC_MATCH.value,
+                    'social_signals': score.social_signals,
+                    'match_reasons': score.match_reasons
+                },
+                search_type=SearchType.NICHE,
+                search_query=query,
+                relevance_score=score.final_score,
+                ranking_position=idx + 1,
+                data_quality_score=self._calculate_data_quality(score.profile),
+                freshness_score=self._calculate_freshness(score.profile)
+            )
+            for idx, score in enumerate(scored_creators[:limit])
+        ]
+
+    def _calculate_semantic_similarity(self, vec1: List[float], vec2: List[float]) -> float:
+        """Calculate cosine similarity between two vectors."""
+        if not vec1 or not vec2 or len(vec1) != len(vec2):
+            return 0.0
+            
+        dot_product = sum(a * b for a, b in zip(vec1, vec2))
+        norm1 = math.sqrt(sum(a * a for a in vec1))
+        norm2 = math.sqrt(sum(b * b for b in vec2))
+        
+        if norm1 == 0 or norm2 == 0:
+            return 0.0
+            
+        return dot_product / (norm1 * norm2)
+
+    async def _get_text_embedding(self, text: str) -> List[float]:
+        """Get embedding vector for text using an embedding model."""
+        # TODO: Implement embedding generation using a proper text embedding model
+        # For now, return a dummy embedding
+        return [0.0] * 384  # Assuming 384-dimensional embeddings
+
+    def _calculate_data_quality(self, profile: CreatorProfile) -> float:
+        """Calculate a score representing the completeness and quality of profile data."""
+        score = 0.0
+        total_checks = 0
+
+        # Check basic profile info
+        if profile.name: score += 1
+        if profile.handle: score += 1
+        if profile.bio: score += 1
+        if profile.profile_url: score += 1
+        total_checks += 4
+
+        # Check social metrics
+        metrics = profile.social_metrics
+        if metrics:
+            if metrics.followers_count is not None: score += 1
+            if metrics.total_views is not None: score += 1
+            if metrics.total_content_count is not None: score += 1
+            total_checks += 3
+
+        # Check engagement metrics
+        engagement = profile.engagement_metrics
+        if engagement:
+            if engagement.engagement_rate is not None: score += 1
+            if engagement.avg_views_per_content is not None: score += 1
+            if engagement.content_frequency is not None: score += 1
+            total_checks += 3
+
+        return score / total_checks if total_checks > 0 else 0.0
+
+    def _calculate_freshness(self, profile: CreatorProfile) -> float:
+        """Calculate how recent and active the profile is."""
+        if not profile.engagement_metrics or not profile.engagement_metrics.last_activity:
+            return 0.0
+
+        # Calculate days since last activity
+        days_since = (datetime.now() - profile.engagement_metrics.last_activity).days
+        
+        # Score decays exponentially with time
+        # Score = 1.0 for same day, 0.9 for 1 day ago, etc.
+        return math.exp(-days_since / 30)  # 30-day decay factor
+
     def _calculate_name_similarity_score(
         self, context: SearchContext, profile: CreatorProfile
     ) -> ProfileScore:

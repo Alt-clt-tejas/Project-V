@@ -2,45 +2,67 @@
 import os
 from pathlib import Path
 from typing import Optional, List
-from pydantic import SecretStr, validator
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic import SecretStr
+from pydantic_settings import BaseSettings
+from pydantic import field_validator
 
 class AppSettings(BaseSettings):
     """
-    Intelligent, environment-aware application settings.
-    It first loads the main .env file to determine the APP_ENV,
-    and then loads the specific .env.{APP_ENV} file.
+    Application settings with environment variable support.
     """
-    # This first setting is loaded from the main .env file
-    APP_ENV: str = "prod"
-
-    model_config = SettingsConfigDict(
-        # This tells pydantic-settings to look for files like .env.prod or .env.dev
-        env_file=f".env.{os.getenv('APP_ENV', 'prod')}",
-        env_file_encoding="utf-8",
-        case_sensitive=True,
-        extra="ignore"
-    )
-
-    # All settings below will be loaded from the environment-specific file
-    # (.env.dev or .env.prod)
-    
     # Basic Application Configuration
+    APP_ENV: str = "prod"
     APP_NAME: str = "Project Oracle"
     DEBUG: bool = False
     LOG_LEVEL: str = "INFO"
-    DATABASE_URL: str
+    DATABASE_URL: str = "postgresql://postgres:postgres@localhost:5432/project_oracle"
 
-    # API Keys & Secrets
+    # Social Media Credentials
+    INSTAGRAM_USERNAME: Optional[str] = None
+    INSTAGRAM_PASSWORD: Optional[str] = None
+    TWITTER_API_KEY: Optional[SecretStr] = None
+    TWITTER_API_SECRET: Optional[SecretStr] = None
     YOUTUBE_API_KEY: Optional[SecretStr] = None
-    # ... other settings ...
+    FACEBOOK_ACCESS_TOKEN: Optional[SecretStr] = None
+    LINKEDIN_CLIENT_ID: Optional[SecretStr] = None
+    LINKEDIN_CLIENT_SECRET: Optional[SecretStr] = None
+    
+    # CORS Settings
+    CORS_ORIGINS: List[str] = ["http://localhost:3000", "http://localhost:8000"]
+    CORS_ALLOW_CREDENTIALS: bool = True
+    CORS_ALLOW_METHODS: List[str] = ["*"]
+    CORS_ALLOW_HEADERS: List[str] = ["*"]
 
-# The AppSettings class needs to be instantiated after we determine the APP_ENV
-# We use a small helper function to manage this.
-def get_settings() -> AppSettings:
-    from dotenv import load_dotenv
-    # Load the main .env file first to get the APP_ENV
-    load_dotenv(".env")
-    return AppSettings()
+    @field_validator("CORS_ORIGINS", mode="before")
+    @classmethod
+    def validate_cors_origins(cls, v):
+        # Handle string input (comma-separated)
+        if isinstance(v, str):
+            if v.startswith("["):
+                # If it's a JSON string, parse it
+                import json
+                try:
+                    return json.loads(v)
+                except json.JSONDecodeError:
+                    pass
+            # Otherwise, split by comma
+            return [origin.strip() for origin in v.split(",") if origin.strip()]
+        return v
+    
+    model_config = {
+        "env_file": f".env.{os.getenv('APP_ENV', 'prod')}",
+        "env_file_encoding": "utf-8",
+        "case_sensitive": True,
+        "extra": "ignore"
+    }
+    
+    @field_validator("LOG_LEVEL")
+    @classmethod
+    def validate_log_level(cls, v: str) -> str:
+        allowed = ["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"]
+        if v.upper() not in allowed:
+            raise ValueError(f"Log level must be one of {allowed}")
+        return v.upper()
 
-settings = get_settings()
+# Initialize settings
+settings = AppSettings()

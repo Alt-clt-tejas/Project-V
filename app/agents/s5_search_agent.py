@@ -2,7 +2,8 @@
 import asyncio
 import logging
 import time
-from typing import List, Dict, Optional, Set, Tuple, Any
+import math
+from typing import List, Dict, Optional, Set, Tuple, Any, cast
 from datetime import datetime, timedelta
 from dataclasses import dataclass, field
 from collections import defaultdict
@@ -10,17 +11,17 @@ from collections import defaultdict
 from app.connectors.base_connector import BaseConnector
 from app.domains.search.schemas import (
     Platform, SearchResult, SearchType, SearchQuery, SearchResponse, 
-    SearchFilter, CreatorProfile, ContentCategory
+    SearchFilter, CreatorProfile, ContentCategory, SearchMatchDetails,
+    EngagementMetrics, SocialMetrics
 )
 from app.domains.search.service import SearchService
-
+from app.exceptions import ConnectorException
 
 logger = logging.getLogger(__name__)
 
 
 @dataclass
 class SearchMetrics:
-    """Metrics for search performance monitoring."""
     query: str
     search_type: SearchType
     platforms_searched: List[Platform]
@@ -46,13 +47,21 @@ class CacheEntry:
 
 
 class SearchCache:
-    """In-memory search cache with TTL support."""
+    """Thread-safe cache for search results with TTL."""
     
     def __init__(self, default_ttl_seconds: int = 300, max_entries: int = 1000):
-        self._cache: Dict[str, CacheEntry] = {}
         self.default_ttl = default_ttl_seconds
         self.max_entries = max_entries
+        self._cache: Dict[str, CacheEntry] = {}
         self._lock = asyncio.Lock()
+        
+    async def close(self):
+        """Clean up resources during shutdown."""
+        async with self._lock:
+            self._cache.clear()
+            logger.info("Search cache cleared during shutdown")
+        # Reset cache and lock to initial state
+        self._cache = {}
     
     def _generate_cache_key(
         self, 
@@ -67,8 +76,8 @@ class SearchCache:
         # Include relevant filter parameters in cache key
         filter_parts = []
         if filters:
-            if filters.categories:
-                filter_parts.append(f"cat_{'_'.join(c.value for c in filters.categories)}")
+            if hasattr(filters, 'content_categories') and filters.content_categories:
+                filter_parts.append(f"cat_{'_'.join(c.value for c in filters.content_categories)}")
             if filters.min_followers:
                 filter_parts.append(f"minf_{filters.min_followers}")
             if filters.max_followers:
@@ -193,132 +202,599 @@ class S5SearchAgent:
     def __init__(
         self,
         connectors: Dict[Platform, BaseConnector],
-        search_service: SearchService,
+        search_service: Optional[SearchService] = None,
         cache_ttl_seconds: int = 300,
         max_cache_entries: int = 1000,
         timeout_seconds: float = 30.0
     ):
-        self.connectors = connectors
-        self.search_service = search_service
-        self.cache = SearchCache(cache_ttl_seconds, max_cache_entries)
-        self.timeout_seconds = timeout_seconds
+        """Initialize the search agent with the given connectors and settings."""
+        self._connectors = connectors
+        self._search_service = search_service
+        self._timeout_seconds = timeout_seconds
+        self._is_shutting_down = False
+        self._cache = SearchCache(
+            default_ttl_seconds=cache_ttl_seconds,
+            max_entries=max_cache_entries
+        )
+        
+        # Active search tracking
+        self._active_searches = set()
         
         # Performance tracking
         self._search_count = 0
         self._total_search_time = 0.0
-        self._platform_performance: Dict[Platform, List[float]] = defaultdict(list)
-
+        self._platform_performance = defaultdict(list)
+        self._cached_suggestions: Dict[str, List[str]] = {}
+        self._max_cache_entries = max_cache_entries
+        
+    @property
+    def connectors(self) -> Dict[Platform, BaseConnector]:
+        return self._connectors
+        
+    @property
+    def timeout_seconds(self) -> float:
+        return self._timeout_seconds
+        
+    def get_suggestions(
+        self,
+        query: str,
+        profiles: List[CreatorProfile],
+        max_suggestions: int = 5
+    ) -> List[str]:
+        """Generate search suggestions based on profiles and query context."""
+        if not query or not profiles:
+            return []
+            
+        query_lower = query.lower()
+        
+        # Try cache first
+        if query_lower in self._cached_suggestions:
+            return self._cached_suggestions[query_lower][:max_suggestions]
+            
+        suggestions = set()
+        
+        # Extract terms from profiles
+        for profile in profiles:
+            # Add relevant categories
+            for category in (profile.metadata.categories if profile.metadata else []):
+                if category.value.lower() not in query_lower:
+                    suggestions.add(f"{query} {category.value}")
+            
+            # Add terms from bio
+            if profile.bio:
+                words = {w.strip().lower() for w in profile.bio.split() if len(w) > 3}
+                for word in words:
+                    if word not in query_lower:
+                        suggestions.add(f"{query} {word}")
+                        
+        # Convert to list and sort by length (prefer shorter suggestions)
+        suggestion_list = sorted(suggestions, key=len)[:max_suggestions]
+        
+        # Cache results
+        self._cached_suggestions[query_lower] = suggestion_list
+        if len(self._cached_suggestions) > self._max_cache_entries:
+            # Remove oldest entries if cache is full
+            oldest_query = min(self._cached_suggestions.keys())
+            del self._cached_suggestions[oldest_query]
+            
+        return suggestion_list
+        
+    async def _execute_platform_search(
+        self,
+        connector: BaseConnector,
+        query: str,
+        search_type: SearchType,
+        filters: Dict[str, Any],
+        limit: int
+    ) -> List[CreatorProfile]:
+        """Execute a search on a single platform with proper error handling."""
+        platform = connector.platform
+        start_time = datetime.now()
+        
+        try:
+            results = await connector.search(
+                query=query,
+                search_type=search_type.value,
+                filters=filters,
+                limit=limit
+            )
+            
+            # Track performance
+            search_time = (datetime.now() - start_time).total_seconds()
+            self._platform_performance[platform].append(search_time)
+            
+            logger.info(
+                f"Platform search completed",
+                extra={
+                    "platform": platform.value,
+                    "results_count": len(results),
+                    "duration": f"{search_time:.2f}s"
+                }
+            )
+            
+            return results
+            
+        except ConnectorException as e:
+            logger.error(
+                f"Platform search failed",
+                extra={
+                    "platform": platform.value,
+                    "error": str(e),
+                    "duration": f"{(datetime.now() - start_time).total_seconds():.2f}s"
+                }
+            )
+            raise
+            
+    async def cleanup_resources(self):
+        """Clean up resources during shutdown."""
+        if self._is_shutting_down:
+            return
+            
+        self._is_shutting_down = True
+        try:
+            # Clear cache
+            if hasattr(self, '_cache'):
+                await self._cache.close()
+            
+            # Close connectors
+            for connector in self._connectors.values():
+                await connector.close()
+            
+            logger.info("Search agent cleanup complete")
+        except Exception as e:
+            logger.error(f"Error during search agent cleanup: {e}")
+        finally:
+            self._is_shutting_down = False
     async def search(
         self,
         query: str,
-        platforms: List[Platform],
-        search_type: SearchType = SearchType.CREATOR,
+        search_type: SearchType,
         filters: Optional[SearchFilter] = None,
-        use_cache: bool = True,
-        timeout_override: Optional[float] = None
-    ) -> SearchResponse:
+        limit: int = 10
+    ) -> List[SearchResult]:
         """
-        Comprehensive search across multiple platforms with advanced features.
-
-        Args:
-            query: The search term
-            platforms: List of platforms to search
-            search_type: Type of search to perform
-            filters: Advanced filtering options
-            use_cache: Whether to use caching
-            timeout_override: Override default timeout
-
-        Returns:
-            Complete search response with results and metadata
+        Execute a search across configured platforms with advanced error handling
+        and telemetry tracking.
         """
-        start_time = time.time()
-        search_metrics = SearchMetrics(
-            query=query,
-            search_type=search_type,
-            platforms_searched=platforms
-        )
-        
-        # Create SearchQuery object for consistent handling
-        search_query = SearchQuery(
-            query=query,
-            search_type=search_type,
-            filters=filters or SearchFilter()
-        )
+        start_time = datetime.now()
+        self._search_count += 1
+        errors: List[str] = []
         
         try:
-            # Step 1: Check cache
-            cached_profiles = None
-            if use_cache:
-                platforms_set = set(platforms)
-                cached_profiles = await self.cache.get(
-                    query, platforms_set, search_type, filters
-                )
-                
-                if cached_profiles is not None:
-                    search_metrics.cache_hits = 1
-                    logger.info(f"Cache hit for query: {query}")
-                else:
-                    search_metrics.cache_misses = 1
-
-            # Step 2: Gather results from connectors if not cached
-            all_profiles = []
-            if cached_profiles is not None:
-                all_profiles = cached_profiles
-            else:
-                all_profiles = await self._gather_connector_results(
-                    query, platforms, search_metrics, timeout_override
-                )
-                
-                # Cache the raw results
-                if use_cache and all_profiles:
-                    await self.cache.set(
-                        query, set(platforms), search_type, 
-                        all_profiles, filters=filters
-                    )
-
-            # Step 3: Apply filters
-            filtered_profiles = self._apply_filters(all_profiles, filters)
-            search_metrics.total_profiles_found = len(filtered_profiles)
-
-            # Step 4: Score and rank results
-            scoring_start = time.time()
-            scored_results = await self._score_and_rank_results(
-                query, filtered_profiles, search_type, search_metrics
-            )
-            search_metrics.scoring_duration_ms = (time.time() - scoring_start) * 1000
-
-            # Step 5: Build response
-            search_metrics.total_duration_ms = (time.time() - start_time) * 1000
-            response = self._build_search_response(
-                scored_results, search_query, search_metrics
-            )
-
-            # Update performance tracking
-            self._update_performance_metrics(search_metrics)
+            # Normalize filters
+            filters = filters or SearchFilter()
+            platforms_to_search = filters.platforms or list(Platform)
+            
+            # Convert SearchFilter to connector-compatible dict
+            connector_filters = {
+                'min_followers': filters.min_followers,
+                'max_followers': filters.max_followers,
+                'verified_only': filters.verified_only,
+                'min_video_count': filters.min_video_count,
+                'max_video_count': filters.max_video_count,
+                'min_avg_views': filters.min_avg_views,
+                'max_avg_views': filters.max_avg_views,
+                'created_after': filters.created_after,
+                'created_before': filters.created_before,
+                'last_active_after': filters.last_active_after,
+                'active_only': filters.active_only,
+                'countries': filters.countries,
+                'languages': filters.languages
+            }
+            # Remove None values and empty lists
+            connector_filters = {
+                k: v for k, v in connector_filters.items() 
+                if v is not None and (not isinstance(v, list) or v)
+            }
             
             logger.info(
-                f"Search completed: {query} -> {len(scored_results)} results "
-                f"in {search_metrics.total_duration_ms:.1f}ms"
+                f"Starting search across {len(platforms_to_search)} platforms",
+                extra={
+                    "query": query,
+                    "search_type": search_type.value,
+                    "platforms": [p.value for p in platforms_to_search],
+                    "filters": connector_filters
+                }
             )
-
-            return response
-
+            
+            # Handle different search types
+            if search_type == SearchType.NICHE:
+                # For niche search, use semantic search across all platforms at once
+                niche_results = await self._execute_niche_search(
+                    query=query,
+                    filters=filters,
+                    limit=limit
+                )
+                return niche_results
+            
+            # For other search types, gather results concurrently from all platforms
+            tasks = []
+            for platform in platforms_to_search:
+                if platform in self._connectors:
+                    connector = self._connectors[platform]
+                    
+                    # Create the coroutine
+                    coro = self._execute_platform_search(
+                        connector=connector,
+                        query=query,
+                        search_type=search_type,
+                        filters=connector_filters,
+                        limit=limit
+                    )
+                    
+                    # Explicitly wrap the coroutine in a Task
+                    task = asyncio.create_task(coro)
+                    tasks.append(task)
+            
+            if not tasks:
+                logger.warning("No active connectors found for the requested platforms")
+                return []
+                
+            # Wait for all search tasks with timeout
+            results = []
+            done, pending = await asyncio.wait(
+                tasks,
+                timeout=self._timeout_seconds,
+                return_when=asyncio.ALL_COMPLETED
+            )
+            
+            # Cancel any pending tasks
+            for task in pending:
+                task.cancel()
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    logger.warning("Search task cancelled due to timeout")
+                    errors.append("Search timeout")
+            
+            # Gather results and handle errors
+            platform_results_map: Dict[Platform, int] = {}
+            for task in done:
+                try:
+                    platform_results = await task
+                    if platform_results:
+                        filtered_results = self._apply_additional_filters(
+                            platform_results, filters
+                        )
+                        results.extend(filtered_results)
+                        # Update metrics
+                        platform = platform_results[0].platform if platform_results else None
+                        if platform:
+                            platform_results_map[platform] = len(filtered_results)
+                except ConnectorException as e:
+                    logger.error(f"Platform search failed: {e}", exc_info=True)
+                    errors.append(str(e))
+                except Exception as e:
+                    logger.error(f"Unexpected platform search error: {e}", exc_info=True)
+                    errors.append(f"Unexpected error: {str(e)}")
+            
+            # Update performance metrics
+            search_time = (datetime.now() - start_time).total_seconds()
+            self._total_search_time += search_time
+            
+            # Create search results with proper scoring
+            search_results = []
+            for i, profile in enumerate(results[:limit]):
+                quality_score = self._calculate_quality_score(profile)
+                freshness_score = self._calculate_freshness_score(profile)
+                match_confidence = self._calculate_match_confidence(query, profile)
+                match_details = self._calculate_match_details(query, profile)
+                
+                search_result = SearchResult(
+                    profile=profile,
+                    search_query=query,
+                    search_type=search_type,
+                    match_confidence=match_confidence,
+                    ranking_position=i + 1,
+                    relevance_score=match_confidence,  # Use match confidence as relevance for now
+                    match_details=match_details,
+                    data_quality_score=quality_score,
+                    freshness_score=freshness_score
+                )
+                search_results.append(search_result)
+            
+            logger.info(
+                f"Search completed successfully",
+                extra={
+                    "duration_ms": search_time * 1000,
+                    "results_count": len(search_results),
+                    "platforms_count": len(platforms_to_search),
+                    "errors_count": len(errors),
+                    "platform_breakdown": platform_results_map
+                }
+            )
+            
+            return search_results
+            
         except Exception as e:
-            search_metrics.errors.append(str(e))
-            search_metrics.total_duration_ms = (time.time() - start_time) * 1000
-            
-            logger.error(f"Search failed for query '{query}': {e}")
-            
-            # Return empty response with error information
-            return SearchResponse(
-                results=[],
-                total_count=0,
-                page_count=0,
-                current_page=1,
-                query=search_query,
-                search_duration_ms=search_metrics.total_duration_ms,
-                suggestions=self.search_service.get_suggestions(query, [], max_suggestions=3)
+            logger.error(f"Search failed: {e}", exc_info=True)
+            errors.append(f"Critical error: {str(e)}")
+            raise
+
+    async def _execute_niche_search(
+        self,
+        query: str,
+        filters: Optional[SearchFilter] = None,
+        limit: int = 50
+    ) -> List[SearchResult]:
+        
+        try:
+            # Use the SearchService for niche-based search
+            if not self._search_service:
+                raise ValueError("SearchService is required for niche-based search")
+                
+            niche_results = await self._search_service.find_creators_by_niche(
+                query=query,
+                filters=filters if filters is not None else SearchFilter(),
+                limit=limit
             )
+            
+            # Process and enrich the results
+            enriched_results = []
+            for idx, result in enumerate(niche_results, start=1):
+                # Calculate quality metrics
+                data_quality = self._calculate_data_quality(result.profile)
+                freshness = self._calculate_freshness(result.profile)
+                
+                # Create a SearchResult with all required fields
+                search_result = SearchResult(
+                    profile=result.profile,
+                    match_confidence=result.match_confidence,
+                    relevance_score=result.relevance_score,
+                    ranking_position=idx,
+                    search_query=query,
+                    search_type=SearchType.NICHE,
+                    data_quality_score=data_quality,
+                    freshness_score=freshness,
+                    match_details=SearchMatchDetails(
+                        semantic_similarity=result.match_details.semantic_similarity if result.match_details else None,
+                        social_signals=result.match_details.social_signals if result.match_details else None,
+                        name_similarity=0.0,
+                        handle_similarity=0.0,
+                        bio_relevance=0.0,
+                        social_signals_boost=0.0,
+                        match_reasons=result.match_details.match_reasons if result.match_details else []
+                    )
+                )
+                enriched_results.append(search_result)
+            
+            return enriched_results
+            
+        except Exception as e:
+            logger.error(f"Error during niche search: {str(e)}", exc_info=True)
+            return []
+
+    def _calculate_data_quality(self, profile: CreatorProfile) -> float:
+        """Calculate a score representing the completeness and quality of profile data."""
+        score = 0.0
+        total_checks = 0
+
+        # Check basic profile info
+        if profile.name: score += 1
+        if profile.handle: score += 1
+        if profile.bio: score += 1
+        if profile.profile_url: score += 1
+        total_checks += 4
+
+        # Check social metrics
+        metrics = profile.social_metrics
+        if metrics:
+            if metrics.followers_count is not None: score += 1
+            if metrics.total_views is not None: score += 1
+            if metrics.total_content_count is not None: score += 1
+            total_checks += 3
+
+        # Check engagement metrics
+        engagement = profile.engagement_metrics
+        if engagement:
+            if engagement.engagement_rate is not None: score += 1
+            if engagement.avg_views_per_content is not None: score += 1
+            if engagement.content_frequency is not None: score += 1
+            total_checks += 3
+
+        return score / total_checks if total_checks > 0 else 0.0
+
+    def _calculate_freshness(self, profile: CreatorProfile) -> float:
+        """Calculate how recent and active the profile is."""
+        if not profile.engagement_metrics or not profile.engagement_metrics.last_activity:
+            return 0.0
+
+        # Calculate days since last activity
+        days_since = (datetime.now() - profile.engagement_metrics.last_activity).days
+        
+        # Score decays exponentially with time
+        # Score = 1.0 for same day, 0.9 for 1 day ago, etc.
+        return math.exp(-days_since / 30)  # 30-day decay factor
+            
+    def _apply_additional_filters(
+        self,
+        profiles: List[CreatorProfile],
+        filters: SearchFilter
+    ) -> List[CreatorProfile]:
+        """Apply filters that couldn't be applied at the connector level."""
+        if not filters:
+            return profiles
+            
+        filtered = []
+        for profile in profiles:
+            # Check engagement rate
+            if (filters.min_engagement_rate and 
+                profile.engagement_metrics and 
+                profile.engagement_metrics.engagement_rate and
+                profile.engagement_metrics.engagement_rate < filters.min_engagement_rate):
+                continue
+                
+            if (filters.max_engagement_rate and 
+                profile.engagement_metrics and 
+                profile.engagement_metrics.engagement_rate and
+                profile.engagement_metrics.engagement_rate > filters.max_engagement_rate):
+                continue
+            
+            # Check content consistency
+            if (filters.content_consistency_min and 
+                profile.engagement_metrics and 
+                profile.engagement_metrics.content_consistency_score and
+                profile.engagement_metrics.content_consistency_score < filters.content_consistency_min):
+                continue
+                
+            filtered.append(profile)
+            
+        return filtered
+
+    def _calculate_match_confidence(self, query: str, profile: CreatorProfile) -> float:
+        """Calculate a confidence score for how well the profile matches the query."""
+        query_lower = query.lower()
+        profile_name_lower = profile.name.lower()
+        handle_lower = profile.handle.lower()
+        bio_lower = profile.bio.lower() if profile.bio else ""
+        
+        # Direct matches have higher weight
+        if query_lower == profile_name_lower or query_lower == handle_lower:
+            return 1.0
+            
+        # Partial matches
+        confidence = 0.0
+        if query_lower in profile_name_lower:
+            confidence += 0.5
+        if query_lower in handle_lower:
+            confidence += 0.3
+        if query_lower in bio_lower:
+            confidence += 0.2
+            
+        # Boost confidence based on verification and metrics
+        if profile.is_verified:
+            confidence = min(1.0, confidence + 0.2)
+            
+        return round(min(1.0, confidence), 2)
+    
+    def _calculate_match_details(self, query: str, profile: CreatorProfile) -> SearchMatchDetails:
+        """Calculate detailed matching information."""
+        query_terms = query.lower().split()
+        name_score = 0.0
+        bio_score = 0.0
+        handle_score = 0.0
+        exact_matches = []
+        partial_matches = []
+        matched_fields = []
+        match_reasons = []
+        
+        # Calculate name match
+        if profile.name:
+            name_lower = profile.name.lower()
+            if query.lower() == name_lower:
+                name_score = 1.0
+                exact_matches.append("name")
+                matched_fields.append("name")
+                match_reasons.append("Exact name match")
+            else:
+                for term in query_terms:
+                    if term == name_lower:
+                        name_score += 1.0
+                        exact_matches.append("name")
+                    elif term in name_lower:
+                        name_score += 0.5 / len(query_terms)
+                        partial_matches.append("name")
+                if name_score > 0:
+                    matched_fields.append("name")
+                    match_reasons.append(f"Name similarity: {name_score:.0%}")
+                    
+        # Calculate handle match
+        handle_lower = profile.handle.lower()
+        if query.lower() == handle_lower:
+            handle_score = 1.0
+            exact_matches.append("handle")
+            matched_fields.append("handle")
+            match_reasons.append("Exact handle match")
+        else:
+            for term in query_terms:
+                if term == handle_lower:
+                    handle_score += 1.0
+                    exact_matches.append("handle")
+                elif term in handle_lower:
+                    handle_score += 0.5 / len(query_terms)
+                    partial_matches.append("handle")
+            if handle_score > 0:
+                matched_fields.append("handle")
+                match_reasons.append(f"Handle similarity: {handle_score:.0%}")
+                
+        # Calculate bio match
+        if profile.bio:
+            bio_lower = profile.bio.lower()
+            for term in query_terms:
+                if term in bio_lower:
+                    bio_score += 1.0 / len(query_terms)
+                    partial_matches.append("bio")
+            if bio_score > 0:
+                matched_fields.append("bio")
+                match_reasons.append(f"Bio relevance: {bio_score:.0%}")
+                
+        # Calculate social signals boost
+        social_boost = 0.0
+        if profile.social_metrics:
+            if profile.social_metrics.followers_count and profile.social_metrics.followers_count > 10000:
+                social_boost += 0.2
+                match_reasons.append(f"Popular creator with {profile.social_metrics.followers_count:,} followers")
+            if profile.engagement_metrics and profile.engagement_metrics.engagement_rate and profile.engagement_metrics.engagement_rate > 5.0:
+                social_boost += 0.2
+                match_reasons.append(f"High engagement rate: {profile.engagement_metrics.engagement_rate:.1f}%")
+                
+        if profile.is_verified:
+            social_boost += 0.1
+            match_reasons.append("Verified creator")
+                
+        return SearchMatchDetails(
+            name_similarity=round(name_score, 2),
+            handle_similarity=round(handle_score, 2),
+            bio_relevance=round(bio_score, 2),
+            keyword_matches=len(exact_matches) + len(partial_matches),
+            exact_matches=list(set(exact_matches)),
+            partial_matches=list(set(partial_matches)),
+            social_signals_boost=round(social_boost, 2),
+            semantic_similarity=None,
+            social_signals=None,
+            match_reasons=match_reasons,
+            matched_fields=list(set(matched_fields))
+        )
+    
+    def _calculate_quality_score(self, profile: CreatorProfile) -> float:
+        """Calculate a data quality score based on profile completeness."""
+        score = 0.5  # Base score
+        
+        # Add points for complete fields
+        if profile.bio:
+            score += 0.1
+        if profile.avatar_url:
+            score += 0.1
+        if profile.is_verified:
+            score += 0.2
+        if profile.metadata.profile_completeness:
+            score = min(1.0, score + profile.metadata.profile_completeness)
+            
+        return round(score, 2)
+    
+    def _calculate_freshness_score(self, profile: CreatorProfile) -> float:
+        """Calculate how fresh/recent the profile data is."""
+        if not profile.scraped_at:
+            return 0.5
+            
+        current_time = datetime.now()
+        if not profile.scraped_at.tzinfo:
+            profile_time = profile.scraped_at.replace(tzinfo=None)
+        else:
+            profile_time = profile.scraped_at.astimezone().replace(tzinfo=None)
+            
+        age_hours = (current_time - profile_time).total_seconds() / 3600
+        
+        if age_hours < 1:
+            return 1.0
+        elif age_hours < 24:
+            return 0.9
+        elif age_hours < 72:
+            return 0.7
+        elif age_hours < 168:  # 1 week
+            return 0.5
+        else:
+            return 0.3
 
     async def _gather_connector_results(
         self,
@@ -422,8 +898,8 @@ class S5SearchAgent:
                 continue
             
             # Category filter
-            if filters.categories and profile.metadata.categories:
-                if not any(cat in filters.categories for cat in profile.metadata.categories):
+            if hasattr(filters, 'content_categories') and filters.content_categories and profile.metadata.categories:
+                if not any(cat in filters.content_categories for cat in profile.metadata.categories):
                     continue
             
             # Follower count filters
@@ -491,7 +967,11 @@ class S5SearchAgent:
 
         try:
             # Use the enhanced search service for scoring
-            scored_results = self.search_service.score_results(query, profiles, search_type)
+            if self._search_service:
+                scored_results = self._search_service.score_results(query, profiles, search_type)
+            else:
+                # Return unscored results if no search service
+                scored_results = []
             
             # Add ranking positions
             for i, result in enumerate(scored_results, 1):
@@ -512,7 +992,23 @@ class S5SearchAgent:
                     match_confidence=0.5,  # Default confidence
                     search_query=query,
                     search_type=search_type,
-                    ranking_position=i
+                    ranking_position=i,
+                    relevance_score=0.5,  # Default relevance
+                    match_details=SearchMatchDetails(
+                        name_similarity=0.0,
+                        handle_similarity=0.0,
+                        bio_relevance=0.0,
+                        social_signals_boost=0.0,
+                        semantic_similarity=None,
+                        social_signals=None,
+                        keyword_matches=0,
+                        exact_matches=[],
+                        partial_matches=[],
+                        match_reasons=[],
+                        matched_fields=[]
+                    ),
+                    data_quality_score=0.5,  # Default quality
+                    freshness_score=0.5  # Default freshness
                 )
                 for i, profile in enumerate(profiles, 1)
             ]
@@ -534,11 +1030,13 @@ class S5SearchAgent:
             for category in result.profile.metadata.categories:
                 category_breakdown[category] += 1
 
-        # Generate suggestions
-        all_profiles = [result.profile for result in results]
-        suggestions = self.search_service.get_suggestions(
-            query.query, all_profiles, max_suggestions=5
-        )
+        # Generate suggestions if search service available
+        suggestions = []
+        if self._search_service:
+            all_profiles = [result.profile for result in results]
+            suggestions = self._search_service.get_suggestions(
+                query.query, all_profiles, max_suggestions=5
+            )
 
         return SearchResponse(
             results=results,
@@ -573,26 +1071,39 @@ class S5SearchAgent:
         
         # Add keywords from bio
         if creator_profile.bio:
-            bio_keywords = self.search_service.text_processor.get_important_terms(creator_profile.bio)
+            # Extract bio keywords if search service available
+            bio_keywords = []
+            if self._search_service and self._search_service.text_processor:
+                bio_keywords = self._search_service.text_processor.get_important_terms(creator_profile.bio)
             query_parts.extend(list(bio_keywords)[:3])  # Limit to top 3 keywords
         
         if not query_parts:
             return []
         
-        search_query = " ".join(query_parts)
+        search_query_str = " ".join(query_parts)
         target_platforms = platforms or [creator_profile.platform]
         
-        # Search with topic-based scoring
-        response = await self.search(
-            query=search_query,
-            platforms=target_platforms,
+        # Create SearchQuery object for the new search method
+        search_query = SearchQuery(
+            query=search_query_str,
             search_type=SearchType.SIMILAR,
-            filters=SearchFilter(limit=limit * 2)  # Get more for better filtering
+            filters=SearchFilter(
+                platforms=target_platforms,
+
+            )
+        )
+        
+        # Search with topic-based scoring
+        # Note: This now calls the modified 'search' method
+        response_results = await self.search(
+            query=search_query.query,
+            search_type=search_query.search_type,
+            filters=search_query.filters
         )
         
         # Filter out the original creator and return top results
         similar_results = [
-            result for result in response.results
+            result for result in response_results
             if result.profile.profile_url != creator_profile.profile_url
         ]
         
@@ -610,18 +1121,24 @@ class S5SearchAgent:
         
         filters = SearchFilter(
             platforms=platforms,
-            categories=[category] if category else [],
+
             verified_only=False,
             active_only=True,
-            limit=limit * 3  # Get more for better ranking
+
         )
         
         # Use a broad query to get active creators
-        response = await self.search(
+        search_query = SearchQuery(
             query="trending popular active",
-            platforms=platforms,
             search_type=SearchType.TRENDING,
             filters=filters
+        )
+        
+        # Note: This now calls the modified 'search' method
+        response_results = await self.search(
+            query=search_query.query,
+            search_type=search_query.search_type,
+            filters=search_query.filters
         )
         
         # Sort by a combination of follower count and engagement
@@ -651,12 +1168,27 @@ class S5SearchAgent:
         
         # Re-sort by trending score
         trending_results = sorted(
-            response.results,
+            response_results,
             key=trending_score,
             reverse=True
         )
         
         return trending_results[:limit]
+
+    def _update_performance_tracking(
+        self,
+        metrics: SearchMetrics
+    ) -> None:
+        """Update internal performance tracking metrics."""
+        self._search_count += 1
+        self._total_search_time += metrics.total_duration_ms
+        
+        for platform, duration in metrics.connector_durations.items():
+            self._platform_performance[platform].append(duration)
+            
+            # Keep only last 100 measurements per platform
+            if len(self._platform_performance[platform]) > 100:
+                self._platform_performance[platform] = self._platform_performance[platform][-100:]
 
     def get_performance_stats(self) -> Dict[str, Any]:
         """Get performance statistics for the search agent."""
@@ -674,14 +1206,15 @@ class S5SearchAgent:
         return {
             "total_searches": self._search_count,
             "average_search_time_ms": avg_search_time,
-            "cache_stats": self.cache.get_stats(),
+            "cache_stats": self._cache.get_stats(),
             "platform_performance": platform_avg_times,
-            "available_connectors": list(self.connectors.keys())
+            "available_connectors": list(self._connectors.keys()),
+            "active_searches": len(self._active_searches) if hasattr(self, '_active_searches') else 0
         }
 
     async def clear_cache(self) -> None:
         """Clear the search cache."""
-        await self.cache.clear()
+        await self._cache.clear()
 
     async def warmup_cache(
         self, 
@@ -692,13 +1225,13 @@ class S5SearchAgent:
         logger.info(f"Warming up cache with {len(common_queries)} queries")
         
         warmup_tasks = []
-        for query in common_queries:
+        for query_str in common_queries:
+            
             task = asyncio.create_task(
                 self.search(
-                    query=query,
-                    platforms=platforms,
+                    query=query_str,
                     search_type=SearchType.CREATOR,
-                    use_cache=False  # Don't use cache for warmup
+                    filters=SearchFilter(platforms=platforms)
                 )
             )
             warmup_tasks.append(task)
@@ -708,7 +1241,26 @@ class S5SearchAgent:
         
         logger.info("Cache warmup completed")
 
+    async def _cleanup(self) -> None:
+        """Clean up resources during shutdown."""
+        if hasattr(self, '_is_shutting_down') and self._is_shutting_down:
+            return
+            
+        self._is_shutting_down = True
+        try:
+            # Close connectors
+            for connector in self._connectors.values():
+                await connector.close()
+                
+            # Clear caches
+            await self.clear_cache()
+            
+            logger.info("Search agent cleanup complete")
+        except Exception as e:
+            logger.error(f"Error during search agent cleanup: {e}")
+        finally:
+            self._is_shutting_down = False
+            
     async def shutdown(self) -> None:
-        """Cleanup resources on shutdown."""
-        await self.clear_cache()
-        logger.info("Search agent shutdown completed")
+        """Clean up and shut down the search agent."""
+        await self._cleanup()

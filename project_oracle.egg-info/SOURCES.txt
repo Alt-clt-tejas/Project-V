@@ -13,9 +13,6 @@ app/api/metrics.py
 app/api/search.py
 app/config/__init__.py
 app/config/base.py
-app/config/dev.py
-app/config/prod.py
-app/config/test.py
 app/connectors/__init__.py
 app/connectors/base_connector.py
 app/connectors/instagram_connector.py
@@ -29,7 +26,7 @@ app/core/exceptions.py
 app/core/logger.py
 app/core/middleware.py
 app/database/__init__.py
-app/database/model.py
+app/database/models.py
 app/database/session.py
 app/domains/__init__.py
 app/domains/enrichment/__init__.py
@@ -46,6 +43,7 @@ app/middleware/metrics_middleware.py
 app/models/__init__.py
 app/models/creator.py
 app/models/search_log.py
+app/scripts/test_db_connection.py
 app/services/__init__.py
 app/services/enrichment_service.py
 app/tests/__init__.py

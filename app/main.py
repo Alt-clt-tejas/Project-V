@@ -10,6 +10,7 @@ from app.api.search import router as search_router
 from app.api.health import router as health_router
 from app.api.metrics import router as metrics_router
 from app.api.enrichment import router as enrichment_router
+from app.api.collect import router as collect_router
 
 from app.middleware.error_handler import ErrorHandlerMiddleware
 from app.middleware.metrics_middleware import MetricsMiddleware
@@ -35,17 +36,38 @@ app.add_middleware(MetricsMiddleware)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.CORS_ORIGINS,
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_credentials=settings.CORS_ALLOW_CREDENTIALS,
+    allow_methods=settings.CORS_ALLOW_METHODS,
+    allow_headers=settings.CORS_ALLOW_HEADERS,
 )
 
 # --- API Router Configuration ---
-# Use the imported router objects directly.
-app.include_router(search_router, prefix="/api/v1")
-app.include_router(enrichment_router, prefix="/api/v1")  # Added enrichment router
-app.include_router(health_router, prefix="/api/v1")
-app.include_router(metrics_router, prefix="/api/v1")
+# Configure all API routes with consistent versioning and proper slash handling
+app.include_router(
+    search_router,
+    prefix="/api/v1",
+    tags=["Search API"]
+)
+app.include_router(
+    enrichment_router,
+    prefix="/api/v1",
+    tags=["Enrichment API"]
+)
+app.include_router(
+    health_router,
+    prefix="/api/v1",
+    tags=["Health Checks"]
+)
+app.include_router(
+    metrics_router,
+    prefix="/api/v1",
+    tags=["Metrics"]
+)
+app.include_router(
+    collect_router,
+    prefix="/api/v1",
+    tags=["Collection"]
+)
 
 # --- Root Endpoint ---
 @app.get("/", tags=["Root"], summary="API Root Endpoint")

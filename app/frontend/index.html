@@ -1,0 +1,202 @@
+<!DOCTYPE html>
+<html class="dark" lang="en">
+
+<head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>DataIntel - Creator Discovery</title>
+
+    <!-- External Libraries & Fonts -->
+    <script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+    <link href="https://fonts.googleapis.com" rel="preconnect" />
+    <link href="https://fonts.gstatic.com" rel="preconnect" crossorigin="" />
+    <link
+        href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;900&family=Poppins:wght@600;700&display=swap"
+        rel="stylesheet" />
+    <link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined" rel="stylesheet" />
+
+    <!-- Link to our custom CSS file -->
+    <link href="assets/css/style.css" rel="stylesheet" />
+
+    <!-- Tailwind Config -->
+    <script>
+        tailwind.config = {
+            darkMode: "class",
+            theme: {
+                extend: {
+                    colors: {
+                        "primary": "#135bec",
+                        "background-light": "#f6f6f8",
+                        "background-dark": "#0D0D10",
+                    },
+                    fontFamily: {
+                        "display": ["Inter", "sans-serif"],
+                        "heading": ["Poppins", "sans-serif"]
+                    },
+                    borderRadius: {
+                        "DEFAULT": "0.25rem",
+                        "lg": "0.5rem",
+                        "xl": "0.75rem",
+                        "full": "9999px"
+                    },
+                },
+            },
+        }
+    </script>
+</head>
+
+<body class="font-display bg-background-light dark:bg-background-dark text-[#A1A1A6]">
+    <div class="relative w-full">
+        <!-- Top Navigation Bar -->
+        <header
+            class="sticky top-0 z-50 flex items-center justify-between whitespace-nowrap border-b border-solid border-white/10 px-4 sm:px-8 md:px-16 lg:px-24 py-4 glassmorphism font-display">
+            <div class="flex items-center gap-4">
+                <div class="size-6 text-[#4199FF]">
+                    <svg fill="none" viewbox="0 0 48 48" xmlns="http://www.w3.org/2000/svg">
+                        <path
+                            d="M4 42.4379C4 42.4379 14.0962 36.0744 24 41.1692C35.0664 46.8624 44 42.2078 44 42.2078L44 7.01134C44 7.01134 35.068 11.6577 24.0031 5.96913C14.0971 0.876274 4 7.27094 4 7.27094L4 42.4379Z"
+                            fill="currentColor"></path>
+                    </svg>
+                </div>
+                <h2 class="text-xl font-bold leading-tight tracking-[-0.015em] gradient-logo font-heading">DataIntel
+                </h2>
+            </div>
+            <nav class="hidden md:flex items-center gap-8">
+                <a class="text-sm font-medium text-white/90 hover:text-white transition-colors" href="#">Dashboard</a>
+                <a class="text-sm font-medium text-white hover:text-white transition-colors border-b-2 border-primary pb-1"
+                    href="#">Discovery</a>
+                <a class="text-sm font-medium text-white/90 hover:text-white transition-colors" href="#">My Lists</a>
+                <a class="text-sm font-medium text-white/90 hover:text-white transition-colors" href="#">Analytics</a>
+            </nav>
+            <div class="flex items-center gap-3">
+                <button
+                    class="flex h-10 w-10 cursor-pointer items-center justify-center overflow-hidden rounded-lg bg-white/5 text-white/90 hover:bg-white/10 transition-colors">
+                    <span class="material-symbols-outlined text-xl">dark_mode</span>
+                </button>
+                <button
+                    class="flex h-10 w-10 cursor-pointer items-center justify-center overflow-hidden rounded-lg bg-white/5 text-white/90 hover:bg-white/10 transition-colors">
+                    <span class="material-symbols-outlined text-xl">person</span>
+                </button>
+            </div>
+        </header>
+
+        <main class="px-4 sm:px-8 md:px-16 lg:px-24 py-5">
+            <!-- Hero Section -->
+            <section
+                class="flex min-h-[480px] flex-col gap-8 items-center justify-center text-center p-4 rounded-xl relative overflow-hidden my-8"
+                style="background: radial-gradient(circle at 50% 50%, rgba(19, 91, 236, 0.15), transparent 60%), #0D0D10;">
+                <div id="hero-banner-bg"
+                    class="absolute inset-0 bg-[url('https://www.transparenttextures.com/patterns/grid.png')] opacity-20">
+                </div>
+                <div class="flex flex-col gap-4 z-10">
+                    <h1 id="hero-title"
+                        class="text-[#F5F5F7] text-4xl sm:text-5xl md:text-6xl font-bold leading-tight tracking-tighter font-heading">
+                        Discover Your Next Creator Partnership
+                    </h1>
+                    <h2 id="hero-subtitle"
+                        class="text-[#A1A1A6] text-base sm:text-lg font-normal leading-normal max-w-2xl mx-auto">
+                        Analyze millions of creators across all platforms with our intelligent data engine.
+                    </h2>
+                </div>
+                <div class="w-full max-w-2xl z-10">
+                    <label class="flex flex-col min-w-40 h-16 w-full relative">
+                        <div class="absolute inset-0 bg-primary/20 blur-xl"></div>
+                        <div
+                            class="flex w-full flex-1 items-stretch rounded-lg h-full border border-primary/50 bg-background-dark/80 backdrop-blur-sm">
+                            <div class="text-primary flex items-center justify-center pl-4">
+                                <span class="material-symbols-outlined text-2xl">search</span>
+                            </div>
+                            <input id="search-input"
+                                class="form-input flex w-full min-w-0 flex-1 resize-none overflow-hidden rounded-lg text-[#F5F5F7] focus:outline-0 focus:ring-0 border-0 bg-transparent h-full placeholder:text-[#A1A1A6] px-4 text-base font-normal leading-normal"
+                                placeholder="Search by name, niche, or keyword..." value="" />
+                            <div class="flex items-center justify-center pr-2">
+                                <button id="search-button"
+                                    class="flex min-w-[90px] max-w-[480px] cursor-pointer items-center justify-center overflow-hidden rounded-lg h-12 px-5 bg-primary text-white text-base font-bold leading-normal tracking-[0.015em] hover:bg-primary/90 transition-colors">
+                                    <span class="truncate">Search</span>
+                                </button>
+                            </div>
+                        </div>
+                    </label>
+                </div>
+            </section>
+
+            <!-- Filter Bar - Intentionally not interactive for this POC -->
+            <div class="sticky top-[81px] z-40 mb-8">
+                <!-- Filter bar HTML content goes here -->
+            </div>
+
+            <!-- Creator Stats Template (Hidden) -->
+            <template id="creator-stats-template">
+                <div class="creator-stats grid grid-cols-2 sm:grid-cols-4 gap-4 mb-8">
+                    <div class="stat-card p-4 rounded-lg bg-white/5">
+                        <p id="stats-followers" class="text-2xl font-bold text-[#F5F5F7]">--</p>
+                        <p class="text-sm text-[#A1A1A6]">Followers</p>
+                    </div>
+                    <div class="stat-card p-4 rounded-lg bg-white/5">
+                        <p id="stats-avg-views" class="text-2xl font-bold text-[#F5F5F7]">--</p>
+                        <p class="text-sm text-[#A1A1A6]">Avg. Views</p>
+                    </div>
+                    <div class="stat-card p-4 rounded-lg bg-white/5">
+                        <p id="stats-engagement" class="text-2xl font-bold text-[#F5F5F7]">--</p>
+                        <p class="text-sm text-[#A1A1A6]">Engagement Rate</p>
+                    </div>
+                    <div class="stat-card p-4 rounded-lg bg-white/5">
+                        <p id="stats-videos" class="text-2xl font-bold text-[#F5F5F7]">--</p>
+                        <p class="text-sm text-[#A1A1A6]">Total Videos</p>
+                    </div>
+                </div>
+            </template>
+
+            <!-- Loading State -->
+            <div id="loading-state" class="hidden flex flex-col items-center justify-center text-center py-20">
+                <div class="w-24 h-24 mb-4">
+                    <!-- Loading spinner -->
+                    <svg class="animate-spin text-primary" xmlns="http://www.w3.org/2000/svg" fill="none"
+                        viewBox="0 0 24 24">
+                        <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4">
+                        </circle>
+                        <path class="opacity-75" fill="currentColor"
+                            d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z">
+                        </path>
+                    </svg>
+                </div>
+                <h3 id="loading-status-text" class="text-xl font-bold text-[#F5F5F7]">Processing Results...</h3>
+                <p class="text-[#A1A1A6] mt-2 max-w-sm">
+                    We're searching across our database to find the perfect creators for you.
+                </p>
+            </div>
+
+            <!-- Results Section -->
+            <section id="results-section">
+                <div id="creator-grid" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+                    <!-- JavaScript will populate this area with creator cards or skeleton loaders -->
+                </div>
+                <div id="empty-state"
+                    class="hidden flex-col items-center justify-center text-center py-20 md:py-32 md:col-span-2 lg:col-span-3">
+                    <div class="w-48 h-48 mb-6">
+                        <svg viewbox="0 0 200 200" xmlns="http://www.w3.org/2000/svg">
+                            <circle cx="100" cy="100" fill="none" r="80" stroke="rgba(255,255,255,0.1)"
+                                stroke-width="4"></circle>
+                            <path d="M100 20 A 80 80 0 0 1 156.5 143.5" fill="none" stroke="#135bec"
+                                stroke-linecap="round" stroke-width="4"></path>
+                            <path d="M125 90 L100 115 L75 90" fill="none" stroke="#F5F5F7" stroke-linecap="round"
+                                stroke-linejoin="round" stroke-width="4"></path>
+                            <line stroke="#F5F5F7" stroke-linecap="round" stroke-width="4" x1="100" x2="100" y1="50"
+                                y2="115"></line>
+                        </svg>
+                    </div>
+                    <h3 id="empty-state-heading" class="text-2xl font-bold text-[#F5F5F7] font-heading">No Creators
+                        Found</h3>
+                    <p id="empty-state-message" class="text-[#A1A1A6] mt-2 max-w-sm">Try adjusting your filters or use a
+                        different keyword to broaden your search.</p>
+                </div>
+            </section>
+        </main>
+    </div>
+
+    <!-- Link to our application logic scripts -->
+    <script src="assets/js/app.js"></script>
+    <script src="assets/js/creator-analytics.js"></script>
+</body>
+
+</html>

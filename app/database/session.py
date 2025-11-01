@@ -33,17 +33,23 @@ engine = create_async_engine(
     connect_args=connect_args
 )
 
-# ... (the rest of the file remains the same)
-
 AsyncSessionFactory = sessionmaker(
     bind=engine,
     class_=AsyncSession,
     expire_on_commit=False,
 )
 
+# FIX: Actually implement the function!
 async def get_db_session() -> AsyncSession:
-    # ...
-    pass
+    """Provide a database session for each request."""
+    async with AsyncSessionFactory() as session:
+        try:
+            yield session
+        except Exception:
+            await session.rollback()
+            raise
+        finally:
+            await session.close()
 
 async def test_connection() -> bool:
     try:

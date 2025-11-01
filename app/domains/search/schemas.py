@@ -52,50 +52,59 @@ class ContentCategory(str, Enum):
 
 class EngagementMetrics(BaseModel):
     """Detailed engagement metrics for creators."""
-    engagement_rate: Optional[float] = Field(None, ge=0.0, le=100.0, description="Engagement rate as percentage")
-    avg_views_per_content: Optional[float] = Field(None, ge=0.0, description="Average views per piece of content")
-    avg_likes_per_content: Optional[float] = Field(None, ge=0.0, description="Average likes per piece of content")
-    avg_comments_per_content: Optional[float] = Field(None, ge=0.0, description="Average comments per piece of content")
-    content_frequency: Optional[str] = Field(None, description="Upload/posting frequency (e.g., 'Daily', 'Weekly')")
-    last_activity: Optional[datetime] = Field(None, description="Last content upload/post date")
+    # All fields are optional with default values
+    engagement_rate: Optional[float] = Field(default=None, ge=0.0, le=100.0, description="Engagement rate as percentage")
+    avg_views_per_content: Optional[float] = Field(default=None, ge=0.0, description="Average views per piece of content")
+    avg_likes_per_content: Optional[float] = Field(default=None, ge=0.0, description="Average likes per piece of content")
+    avg_comments_per_content: Optional[float] = Field(default=None, ge=0.0, description="Average comments per piece of content")
+    content_frequency: Optional[str] = Field(default=None, description="Upload/posting frequency (e.g., 'Daily', 'Weekly')")
+    last_activity: Optional[datetime] = Field(default=None, description="Last content upload/post date")
     
     # Enhanced YouTube-specific engagement metrics
-    most_popular_content_views: Optional[int] = Field(None, ge=0, description="Views on most popular content")
-    content_consistency_score: Optional[float] = Field(None, ge=0.0, le=1.0, description="Content consistency score")
-    upload_frequency_days: Optional[float] = Field(None, ge=0.0, description="Average days between uploads")
+    most_popular_content_views: Optional[int] = Field(default=None, ge=0, description="Views on most popular content")
+    content_consistency_score: Optional[float] = Field(default=None, ge=0.0, le=1.0, description="Content consistency score")
+    upload_frequency_days: Optional[float] = Field(default=None, ge=0.0, description="Average days between uploads")
+
+    class Config:
+        extra = "allow"
 
 
 class SocialMetrics(BaseModel):
     """Comprehensive social media metrics."""
-    followers_count: Optional[int] = Field(None, ge=0, description="Number of followers/subscribers")
-    following_count: Optional[int] = Field(None, ge=0, description="Number of accounts following")
-    total_views: Optional[int] = Field(None, ge=0, description="Total profile/channel views")
-    total_content_count: Optional[int] = Field(None, ge=0, description="Total number of posts/videos")
-    likes_count: Optional[int] = Field(None, ge=0, description="Total likes received")
-    comments_count: Optional[int] = Field(None, ge=0, description="Total comments received")
-    shares_count: Optional[int] = Field(None, ge=0, description="Total shares/reposts")
+    # All fields are optional with default values
+    followers_count: Optional[int] = Field(default=None, ge=0, description="Number of followers/subscribers")
+    following_count: Optional[int] = Field(default=None, ge=0, description="Number of accounts following")
+    total_views: Optional[int] = Field(default=None, ge=0, description="Total profile/channel views")
+    total_content_count: Optional[int] = Field(default=None, ge=0, description="Total number of posts/videos")
+    likes_count: Optional[int] = Field(default=None, ge=0, description="Total likes received")
+    comments_count: Optional[int] = Field(default=None, ge=0, description="Total comments received")
+    shares_count: Optional[int] = Field(default=None, ge=0, description="Total shares/reposts")
     
     # Platform-specific metrics
-    video_count: Optional[int] = Field(None, ge=0, description="Number of videos (YouTube)")
-    playlist_count: Optional[int] = Field(None, ge=0, description="Number of playlists (YouTube)")
-    tweets_count: Optional[int] = Field(None, ge=0, description="Number of tweets (Twitter)")
-    posts_count: Optional[int] = Field(None, ge=0, description="Number of posts (Instagram)")
+    video_count: Optional[int] = Field(default=None, ge=0, description="Number of videos (YouTube)")
+    playlist_count: Optional[int] = Field(default=None, ge=0, description="Number of playlists (YouTube)")
+    tweets_count: Optional[int] = Field(default=None, ge=0, description="Number of tweets (Twitter)")
+    posts_count: Optional[int] = Field(default=None, ge=0, description="Number of posts (Instagram)")
     
     # Enhanced YouTube metrics
-    avg_views_per_video: Optional[float] = Field(None, ge=0.0, description="Average views per video (YouTube)")
-    channel_age_days: Optional[int] = Field(None, ge=0, description="Channel age in days (YouTube)")
-    subscriber_growth_rate: Optional[float] = Field(None, description="Estimated subscriber growth rate")
+    avg_views_per_video: Optional[float] = Field(default=None, ge=0.0, description="Average views per video (YouTube)")
+    channel_age_days: Optional[int] = Field(default=None, ge=0, description="Channel age in days (YouTube)")
+    subscriber_growth_rate: Optional[float] = Field(default=None, description="Estimated subscriber growth rate")
+
+    class Config:
+        extra = "allow"
 
 
 class ProfileMetadata(BaseModel):
     """Extended metadata for creator profiles."""
+    # All fields with explicit defaults
     categories: List[ContentCategory] = Field(default_factory=list, description="Content categories")
     tags: List[str] = Field(default_factory=list, description="Profile tags/keywords")
     languages: List[str] = Field(default_factory=list, description="Content languages (ISO codes)")
-    country: Optional[str] = Field(None, description="Creator's country (ISO code)")
-    city: Optional[str] = Field(None, description="Creator's city")
-    website: Optional[HttpUrl] = Field(None, description="Creator's website")
-    business_email: Optional[str] = Field(None, description="Business contact email")
+    country: Optional[str] = Field(default=None, description="Creator's country (ISO code)")
+    city: Optional[str] = Field(default=None, description="Creator's city")
+    website: Optional[HttpUrl] = Field(default=None, description="Creator's website")
+    business_email: Optional[str] = Field(default=None, description="Business contact email")
     
     # Platform-specific data
     custom_fields: Dict[str, Any] = Field(default_factory=dict, description="Platform-specific additional data")
@@ -105,9 +114,12 @@ class ProfileMetadata(BaseModel):
     keywords: List[str] = Field(default_factory=list, description="Channel keywords/tags")
     
     # Data quality indicators
-    profile_completeness: Optional[float] = Field(None, ge=0.0, le=1.0, description="Profile completeness score")
-    data_freshness: Optional[datetime] = Field(None, description="When the data was last updated")
-    reliability_score: Optional[float] = Field(None, ge=0.0, le=1.0, description="Data reliability score")
+    profile_completeness: Optional[float] = Field(default=None, ge=0.0, le=1.0, description="Profile completeness score")
+    data_freshness: Optional[datetime] = Field(default=None, description="When the data was last updated")
+    reliability_score: Optional[float] = Field(default=None, ge=0.0, le=1.0, description="Data reliability score")
+
+    class Config:
+        extra = "allow"
 
 
 class CreatorProfile(BaseModel):
@@ -134,11 +146,11 @@ class CreatorProfile(BaseModel):
     is_active: bool = Field(default=True, description="Whether the account appears to be active")
     
     # Comprehensive metrics
-    social_metrics: SocialMetrics = Field(default_factory=SocialMetrics)
-    engagement_metrics: EngagementMetrics = Field(default_factory=EngagementMetrics)
+    social_metrics: SocialMetrics = Field(default_factory=lambda: SocialMetrics())
+    engagement_metrics: EngagementMetrics = Field(default_factory=lambda: EngagementMetrics())
     
     # Enhanced metadata
-    metadata: ProfileMetadata = Field(default_factory=ProfileMetadata)
+    metadata: ProfileMetadata = Field(default_factory=lambda: ProfileMetadata())
     
     # Timestamps
     created_at: Optional[datetime] = Field(None, description="Account creation date")
@@ -218,6 +230,20 @@ class SearchMatchDetails(BaseModel):
     social_signals_boost: Optional[float] = Field(None, ge=0.0, le=1.0, description="Social signals contribution")
     match_reasons: List[str] = Field(default_factory=list, description="Human-readable match explanations")
     matched_fields: List[str] = Field(default_factory=list, description="Fields where matches were found")
+    semantic_similarity: Optional[float] = Field(None, description="Semantic similarity score")
+    social_signals: Optional[float] = Field(None, description="Social signal boosting factor")
+
+
+class SearchType(str, Enum):
+    """Enhanced enumeration for different types of searches."""
+    CREATOR = "creator"    # Direct creator name/handle search
+    TOPIC = "topic"       # Keyword/topic based search
+    NICHE = "niche"      # Semantic niche-based search using embeddings
+    HASHTAG = "hashtag"
+    CATEGORY = "category"
+    LOCATION = "location"
+    SIMILAR = "similar"
+    TRENDING = "trending"
 
 
 class SearchResult(BaseModel):
@@ -227,54 +253,49 @@ class SearchResult(BaseModel):
     """
     profile: CreatorProfile
     match_confidence: float = Field(..., ge=0.0, le=1.0, description="Overall match confidence score")
-    relevance_score: Optional[float] = Field(None, ge=0.0, description="Raw relevance score before normalization")
-    ranking_position: Optional[int] = Field(None, ge=1, description="Position in search results")
+    relevance_score: float = Field(..., ge=0.0, description="Raw relevance score before normalization")
+    ranking_position: int = Field(..., ge=1, description="Position in search results")
+    
+    # Search context
+    search_query: str = Field(..., description="Original search query")
+    search_type: SearchType = Field(..., description="Type of search performed")
+    
+    # Quality indicators
+    data_quality_score: float = Field(..., ge=0.0, le=1.0, description="Quality of profile data")
+    freshness_score: float = Field(..., ge=0.0, le=1.0, description="How recent the data is")
     
     # Detailed matching information
     match_details: Optional[SearchMatchDetails] = Field(None, description="Detailed match analysis")
-    
-    # Search context
-    search_query: Optional[str] = Field(None, description="Original search query")
-    search_type: Optional['SearchType'] = Field(None, description="Type of search performed")
-    
-    # Quality indicators
-    data_quality_score: Optional[float] = Field(None, ge=0.0, le=1.0, description="Quality of profile data")
-    freshness_score: Optional[float] = Field(None, ge=0.0, le=1.0, description="How recent the data is")
     
     class Config:
         use_enum_values = True
 
 
-class SearchType(str, Enum):
-    """Enhanced enumeration for different types of searches."""
-    CREATOR = "creator"
-    TOPIC = "topic"
-    HASHTAG = "hashtag"
-    CATEGORY = "category"
-    LOCATION = "location"
-    SIMILAR = "similar"
-    TRENDING = "trending"
-
-
 class SearchFilter(BaseModel):
     """Advanced filtering options for search queries."""
-    platforms: List[Platform] = Field(default_factory=list)
-    categories: List[ContentCategory] = Field(default_factory=list)
+    platforms: Optional[List[Platform]] = Field(
+        default=None,
+        description="List of platforms to search"
+    )
+    date_from: Optional[datetime] = None
+    date_to: Optional[datetime] = None
+    
     countries: List[str] = Field(default_factory=list)
     languages: List[str] = Field(default_factory=list)
+    content_categories: List[ContentCategory] = Field(default_factory=list)
     
-    min_followers: Optional[int] = Field(None, ge=0)
-    max_followers: Optional[int] = Field(None, ge=0)
-    min_engagement_rate: Optional[float] = Field(None, ge=0.0, le=100.0)
-    max_engagement_rate: Optional[float] = Field(None, ge=0.0, le=100.0)
+    min_followers: Optional[int] = Field(default=None, ge=0)
+    max_followers: Optional[int] = Field(default=None, ge=0)
+    min_engagement_rate: Optional[float] = Field(default=None, ge=0.0, le=100.0)
+    max_engagement_rate: Optional[float] = Field(default=None, ge=0.0, le=100.0)
     
     # Enhanced YouTube-specific filters
-    min_video_count: Optional[int] = Field(None, ge=0)
-    max_video_count: Optional[int] = Field(None, ge=0)
-    min_avg_views: Optional[int] = Field(None, ge=0)
-    max_avg_views: Optional[int] = Field(None, ge=0)
-    min_channel_age_days: Optional[int] = Field(None, ge=0)
-    max_channel_age_days: Optional[int] = Field(None, ge=0)
+    min_video_count: Optional[int] = Field(default=None, ge=0)
+    max_video_count: Optional[int] = Field(default=None, ge=0)
+    min_avg_views: Optional[int] = Field(default=None, ge=0)
+    max_avg_views: Optional[int] = Field(default=None, ge=0)
+    min_channel_age_days: Optional[int] = Field(default=None, ge=0)
+    max_channel_age_days: Optional[int] = Field(default=None, ge=0)
     
     verified_only: bool = Field(default=False)
     active_only: bool = Field(default=True)
@@ -284,8 +305,13 @@ class SearchFilter(BaseModel):
     last_active_after: Optional[datetime] = None
     
     # YouTube-specific filters
-    upload_frequency: Optional[str] = Field(None, description="Filter by upload frequency")
-    content_consistency_min: Optional[float] = Field(None, ge=0.0, le=1.0)
+    upload_frequency: Optional[str] = Field(default=None, description="Filter by upload frequency")
+    content_consistency_min: Optional[float] = Field(default=None, ge=0.0, le=1.0)
+
+    model_config = {
+        "extra": "allow",
+        "populate_by_name": True
+    }
     
     @model_validator(mode='after')
     def validate_ranges(self) -> Self:
@@ -328,7 +354,6 @@ class SearchQuery(BaseModel):
 
 
 class SearchResponse(BaseModel):
-    """Complete search response with results and metadata."""
     results: List[SearchResult]
     total_count: int = Field(ge=0, description="Total number of matching results")
     page_count: int = Field(ge=0, description="Total number of pages")

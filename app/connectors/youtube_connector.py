@@ -66,12 +66,25 @@ YOUTUBE_TOPIC_MAP = {
 class YouTubeSearchConfig:
     """Configuration for YouTube search operations."""
     max_results: int = 25
+    search_type: str = "creator"
     order: str = "relevance"  # relevance, viewCount, date, rating, title, videoCount
     region_code: Optional[str] = None
     relevance_language: Optional[str] = None
     published_after: Optional[datetime] = None
     video_definition: Optional[str] = None  # any, high, standard
     video_duration: Optional[str] = None  # any, long, medium, short
+    min_subscribers: Optional[int] = None
+    max_subscribers: Optional[int] = None
+    verified_only: bool = False
+    topic_categories: Optional[List[str]] = None
+
+    def __post_init__(self):
+        # Convert any topic category strings to their mapped content categories
+        if self.topic_categories:
+            self.topic_categories = [
+                str(cat) for cat in self.topic_categories
+                if str(cat) in YOUTUBE_TOPIC_MAP
+            ]
 
 
 @dataclass
@@ -124,9 +137,11 @@ class YouTubeConnector(BaseConnector):
         return Platform.YOUTUBE
 
     async def search(
-        self, 
-        query: str, 
-        config: Optional[YouTubeSearchConfig] = None
+        self,
+        query: str,
+        search_type: str = "creator",
+        filters: Optional[dict] = None,
+        limit: int = 10
     ) -> List[CreatorProfile]:
         """
         Enhanced search with configurable parameters and comprehensive error handling.
@@ -135,10 +150,34 @@ class YouTubeConnector(BaseConnector):
             logger.warning("Empty search query provided to YouTube connector")
             return []
 
-        config = config or YouTubeSearchConfig()
+        # Create search config with proper defaults
+        search_config = {
+            'max_results': limit,
+            'order': 'relevance'
+        }
+
+        # Add filters if provided
+        if filters:
+            if 'min_followers' in filters:
+                search_config['min_subscribers'] = filters['min_followers']
+            if 'max_followers' in filters:
+                search_config['max_subscribers'] = filters['max_followers']
+            if 'verified_only' in filters:
+                search_config['verified_only'] = filters['verified_only']
+            if 'platforms' in filters:
+                # We're already in the YouTube connector, so we don't need to filter by platform
+                pass
+
+        # Create the config object
+        config = YouTubeSearchConfig(**search_config)
         
         try:
             logger.info(f"Starting YouTube search for query: '{query}' with config: {config}")
+            
+            # Adjust search strategy based on search_type
+            if search_type.lower() == "topic":
+                # For topic search, include channel keywords and descriptions
+                query = f"{query} topic channel"
             
             # Step 1: Search for channels
             search_items = await self._search_channels(query, config)
@@ -147,7 +186,7 @@ class YouTubeConnector(BaseConnector):
                 return []
 
             # Extract channel IDs
-            channel_ids = [item['id']['channelId'] for item in search_items if 'channelId' in item['id']]
+            channel_ids = [item['id']['channelId'] for item in search_items if 'channelId' in item['id']][:limit]
             if not channel_ids:
                 logger.warning("No valid channel IDs found in search results")
                 return []
@@ -338,6 +377,8 @@ class YouTubeConnector(BaseConnector):
                     'id': ','.join(batch_ids)
                 }
                 
+                logger.info(f"Requesting channel details for IDs: {batch_ids}")
+                
                 response = await self._make_youtube_request(
                     'channels',
                     params,
@@ -346,12 +387,25 @@ class YouTubeConnector(BaseConnector):
                 )
                 
                 details = response.get('items', [])
-                all_details.extend(details)
-                logger.debug(f"Retrieved details for batch of {len(details)} channels")
                 
+                if not details:
+                    logger.warning(f"YouTube API returned empty items for channel IDs: {batch_ids}")
+                    logger.warning(f"Full response: {response}")
+                else:
+                    logger.info(f"Retrieved details for {len(details)} channels")
+                
+                all_details.extend(details)
+            
+            except YouTubeAPIError as e:
+                logger.error(f"YouTube API error getting channel details for batch {i//50 + 1}: {e}")
+                logger.error(f"Status code: {e.status_code}")
+                raise  # Don't silently continue - raise the error
             except Exception as e:
-                logger.error(f"Failed to get channel details for batch {i//50 + 1}: {e}")
-                continue
+                logger.error(f"Unexpected error getting channel details for batch {i//50 + 1}: {e}", exc_info=True)
+                raise  # Don't silently continue - raise the error
+
+        if not all_details:
+            raise YouTubeAPIError(f"No channel details retrieved for any of the {len(channel_ids)} channel IDs")
 
         return all_details
 
@@ -730,10 +784,19 @@ class YouTubeConnector(BaseConnector):
         """Map YouTube statistics to social metrics schema."""
         return SocialMetrics(
             followers_count=youtube_metrics.subscriber_count,
+            following_count=None,  # YouTube doesn't have following
             total_views=youtube_metrics.total_views,
-            video_count=youtube_metrics.video_count,
             total_content_count=youtube_metrics.video_count,
-            # Additional YouTube-specific metrics could be added here
+            likes_count=None,  # Aggregate likes not available
+            comments_count=None,  # Aggregate comments not available
+            shares_count=None,  # Shares not available
+            video_count=youtube_metrics.video_count,
+            playlist_count=None,  # Set in custom fields
+            tweets_count=None,  # Not applicable
+            posts_count=None,  # Not applicable
+            avg_views_per_video=youtube_metrics.avg_views_per_video,
+            channel_age_days=youtube_metrics.channel_age_days,
+            subscriber_growth_rate=None  # Not available in basic metrics
         )
 
     def _map_engagement_metrics(
@@ -745,8 +808,13 @@ class YouTubeConnector(BaseConnector):
         return EngagementMetrics(
             engagement_rate=youtube_metrics.engagement_rate,
             avg_views_per_content=youtube_metrics.avg_views_per_video,
+            avg_likes_per_content=None,  # Not consistently available
+            avg_comments_per_content=None,  # Not consistently available
             content_frequency=youtube_metrics.upload_frequency,
-            last_activity=youtube_metrics.last_upload
+            last_activity=youtube_metrics.last_upload,
+            most_popular_content_views=youtube_metrics.most_popular_video_views,
+            content_consistency_score=youtube_metrics.content_consistency_score,
+            upload_frequency_days=None  # Calculated from upload frequency string
         )
 
     def _map_metadata(
@@ -785,8 +853,15 @@ class YouTubeConnector(BaseConnector):
         return ProfileMetadata(
             categories=list(categories),
             tags=keywords[:20],  # Limit to first 20 tags
+            languages=[],  # Language detection would be done at a higher level
             country=snippet.get('country'),
-            custom_fields=custom_fields
+            city=None,  # Not consistently available
+            website=None,  # Would need to parse from description
+            business_email=None,  # Would need to parse from description
+            custom_fields=custom_fields,
+            profile_completeness=0.8,  # Default value based on available fields
+                        data_freshness=datetime.now(timezone.utc),  # Current time as data is fresh
+            reliability_score=0.9  # YouTube is generally reliable
         )
 
     def _determine_verification_status(
@@ -936,7 +1011,7 @@ class YouTubeConnector(BaseConnector):
             logger.info(f"Fetching YouTube channel by handle: {clean_handle}")
             
             # Search for the channel by exact handle match
-            search_results = await self.search(f'"{clean_handle}"', YouTubeSearchConfig(max_results=5))
+            search_results = await self.search(f'"{clean_handle}"', search_type="creator", limit=5)
             
             # Look for exact handle match
             for profile in search_results:
@@ -1017,7 +1092,7 @@ class YouTubeConnector(BaseConnector):
                 region_code=region_code
             )
             
-            profiles = await self.search(query, config)
+            profiles = await self.search(query, search_type="creator", limit=config.max_results)
             
             # Sort by a combination of recent activity and popularity
             def trending_score(profile: CreatorProfile) -> float:

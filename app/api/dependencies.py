@@ -21,24 +21,48 @@ app_state = {}
 @asynccontextmanager
 async def lifespan(app):
     """Application startup/shutdown lifecycle manager."""
-    logger.info("Starting application...")
-    app_state["http_client"] = httpx.AsyncClient(timeout=30.0)
-    app_state["s5_agent"] = get_s5_agent() # Initialize the agent singleton on startup
-    logger.info("Application startup complete.")
-    yield
-    logger.info("Shutting down application...")
-    agent = app_state.get("s5_agent")
-    if agent and hasattr(agent, "shutdown"):
-        await agent.shutdown()
-    client = app_state.get("http_client")
-    if client:
-        await client.aclose()
-    logger.info("Application shutdown complete.")
+    try:
+        logger.info("Starting application...")
+        app_state["http_client"] = httpx.AsyncClient(timeout=30.0)
+        app_state["s5_agent"] = get_s5_agent()  # Initialize the agent singleton on startup
+        logger.info("Application startup complete.")
+        yield
+    except Exception as e:
+        logger.error(f"Error during startup: {e}")
+        raise
+    finally:
+        logger.info("Shutting down application...")
+        try:
+            # Clean up agent
+            agent = app_state.get("s5_agent")
+            if agent and hasattr(agent, "shutdown"):
+                await agent.shutdown()
+
+            # Clean up HTTP client
+            client = app_state.get("http_client")
+            if client:
+                await client.aclose()
+
+            # Clear app state
+            app_state.clear()
+            
+            logger.info("Application shutdown complete.")
+        except Exception as e:
+            logger.error(f"Error during shutdown: {e}")
+            # Don't raise during shutdown
 
 @lru_cache(maxsize=1)
 def get_settings() -> AppSettings:
     """Lazily load and cache application settings."""
     return AppSettings()
+
+def get_youtube_connector() -> YouTubeConnector:
+    """Get YouTube connector instance - called per request."""
+    settings = get_settings()
+    client = app_state.get("http_client")
+    if not client:
+        raise RuntimeError("HTTP client not initialized. Make sure the app has started properly.")
+    return YouTubeConnector(settings=settings, client=client)
 
 @lru_cache(maxsize=1)
 def get_connectors() -> Dict[Platform, BaseConnector]:
